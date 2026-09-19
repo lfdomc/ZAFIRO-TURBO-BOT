@@ -364,7 +364,22 @@ async def obtener_todo_para_export() -> dict:
     """Reconstruye exactamente la forma original del propiedades.json:
     {checkInGeneral, checkOutGeneral, general, masterTable, properties:[...]}
     — properties.datos ya es el objeto completo verbatim, así que el
-    sitio en React recibe lo mismo que recibía antes, sin cambios."""
+    sitio en React recibe lo mismo que recibía antes, sin cambios.
+
+    Si Supabase todavía no tiene nada cargado (antes de la primera
+    importación), esto devuelve una forma "vacía pero segura" — nunca
+    None/undefined en los campos que el sitio siempre espera poder leer
+    (general.mensajesFrecuentes, general.contactos, etc.) — así el sitio
+    no se cae mientras no haya datos, solo se ve vacío."""
+    GENERAL_VACIO = {
+        "formulario": {"texto": "", "link": "", "linkLabel": ""},
+        "comunicacion": None,
+        "reservaDirecta": None,
+        "mensajesFrecuentes": [],
+        "contactos": [],
+        "faqs": [],
+    }
+
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp_config = await client.get(
             f"{_base_url()}/rest/v1/configuracion_general?select=clave,valor",
@@ -381,6 +396,11 @@ async def obtener_todo_para_export() -> dict:
         config = {fila["clave"]: fila["valor"] for fila in resp_config.json()}
         propiedades = [fila["datos"] for fila in resp_props.json()]
 
-        resultado = dict(config)  # checkInGeneral, checkOutGeneral, general, masterTable
-        resultado["properties"] = propiedades
+        resultado = {
+            "checkInGeneral": config.get("checkInGeneral") or "",
+            "checkOutGeneral": config.get("checkOutGeneral") or "",
+            "general": config.get("general") or GENERAL_VACIO,
+            "masterTable": config.get("masterTable") or [],
+            "properties": propiedades,
+        }
         return resultado
