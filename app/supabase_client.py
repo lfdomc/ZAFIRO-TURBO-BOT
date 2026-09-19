@@ -209,11 +209,21 @@ async def eliminar_campo_personalizado(field_id: str) -> bool:
 # Reportes de mantenimiento/limpieza (ver app/reportes.py)
 # ------------------------------------------------------------
 
+async def obtener_config(clave: str):
+    url = f"{_base_url()}/rest/v1/configuracion_general?clave=eq.{clave}&select=valor"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200 and resp.json():
+            return resp.json()[0]["valor"]
+        return None
+
+
 async def obtener_numero_whatsapp(property_id: str | None, tipo: str) -> str | None:
     """Orden de prioridad: 1) campo personalizado de esa propiedad
-    puntual (excepción, si algún día hace falta), 2) número del
-    coordinador global de ese rol (el caso normal — mismo número para
-    todas las propiedades)."""
+    puntual (excepción, si algún día hace falta), 2) número guardado
+    en Supabase desde el panel Admin (Configuración general — el caso
+    normal), 3) variable de entorno en Railway (respaldo, útil antes
+    de configurarlo por primera vez desde el panel)."""
     if property_id:
         datos = await obtener_property(property_id)
         if datos:
@@ -221,6 +231,10 @@ async def obtener_numero_whatsapp(property_id: str | None, tipo: str) -> str | N
             numero_propio = campos.get(f"whatsapp_{tipo}")
             if numero_propio and numero_propio.strip():
                 return numero_propio.strip()
+
+    numero_config = await obtener_config(f"whatsapp_{tipo}_default")
+    if numero_config:
+        return numero_config
 
     if tipo == "mantenimiento":
         return settings.WHATSAPP_MANTENIMIENTO_DEFAULT or None

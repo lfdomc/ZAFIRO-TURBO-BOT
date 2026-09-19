@@ -165,6 +165,34 @@ async def estado_importacion(x_admin_key: str | None = Header(default=None)):
 
 
 # ------------------------------------------------------------
+# Configuración general editable desde el panel — hoy: los números de
+# WhatsApp de los coordinadores de mantenimiento/limpieza. Guardado en
+# Supabase (configuracion_general), con las variables de entorno de
+# Railway como respaldo si todavía no se configuró nada acá.
+# ------------------------------------------------------------
+
+CLAVES_CONFIG_EDITABLE = ["whatsapp_mantenimiento_default", "whatsapp_limpieza_default"]
+
+
+@router.get("/admin/configuracion")
+async def obtener_configuracion(x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    resultado = {}
+    for clave in CLAVES_CONFIG_EDITABLE:
+        resultado[clave] = await supabase_client.obtener_config(clave)
+    return resultado
+
+
+@router.post("/admin/configuracion")
+async def guardar_configuracion(payload: dict, x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    for clave in CLAVES_CONFIG_EDITABLE:
+        if clave in payload:
+            await supabase_client.upsert_configuracion_general(clave, payload[clave])
+    return {"ok": True}
+
+
+# ------------------------------------------------------------
 # Guía pública externa (guia.zafiropm.com) — previsualizar (con
 # comparación si la propiedad ya existe) y aplicar solo los cambios
 # que el admin eligió a mano. Nunca escribe nada en el primer paso.
