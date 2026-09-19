@@ -267,7 +267,11 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
             link_guia_existente = link_guia_unidad or campos_prop.get("link_guia_publica")
 
             if link_guia_existente:
-                await telegram_client.enviar_mensaje(chat_id, f"🔗 Link para el huésped:\n{link_guia_existente}")
+                await telegram_client.enviar_mensaje(
+                    chat_id,
+                    "Si tenés cualquier otra consulta sobre la casa, acá tenés toda la información a mano: "
+                    f"{link_guia_existente} 😊"
+                )
             elif settings.SITE_BASE_URL:
                 token = await supabase_client.crear_acceso_temporal(
                     property_id_detectado, settings.ACCESO_TEMPORAL_HORAS, unit_id_detectado
@@ -276,7 +280,8 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
                     link = f"{settings.SITE_BASE_URL}/consulta?token={token}"
                     await telegram_client.enviar_mensaje(
                         chat_id,
-                        f"🔗 Link para el huésped (válido {settings.ACCESO_TEMPORAL_HORAS}h, se puede reenviar):\n{link}"
+                        "Si tenés cualquier otra consulta sobre la casa, acá tenés toda la información a mano "
+                        f"(el link queda activo por {settings.ACCESO_TEMPORAL_HORAS}h): {link} 😊"
                     )
     except Exception as e:
         logger.error(f"Fallo generando el link para el huésped: {e}")
