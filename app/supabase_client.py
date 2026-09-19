@@ -140,6 +140,18 @@ async def insertar_chunk(
 # CRUD de propiedades — usado por el panel Admin (app/admin.py)
 # ------------------------------------------------------------
 
+async def listar_propiedades_con_datos() -> list[dict]:
+    """Como listar_propiedades_resumen, pero incluye `datos` completo —
+    lo usa el panel Admin para calcular qué falta cargar en cada una."""
+    url = f"{_base_url()}/rest/v1/properties?select=id,nombre,zona,actualizado_en,datos&order=nombre.asc"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200:
+            return resp.json()
+        logger.error(f"Error listando propiedades con datos: HTTP {resp.status_code}: {resp.text}")
+        return []
+
+
 async def listar_propiedades_resumen() -> list[dict]:
     url = f"{_base_url()}/rest/v1/properties?select=id,nombre,zona,actualizado_en&order=nombre.asc"
     async with httpx.AsyncClient(timeout=15.0) as client:

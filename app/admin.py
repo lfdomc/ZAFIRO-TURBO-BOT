@@ -4,7 +4,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException
 
 from app.config import settings
-from app import supabase_client, property_service, state, fuente_externa
+from app import supabase_client, property_service, state, fuente_externa, completitud
 
 logger = logging.getLogger("admin")
 router = APIRouter()
@@ -41,7 +41,15 @@ async def _disparar_redeploy_sitio():
 @router.get("/admin/propiedades")
 async def listar_propiedades(x_admin_key: str | None = Header(default=None)):
     _verificar_admin_key(x_admin_key)
-    return await supabase_client.listar_propiedades_resumen()
+    filas = await supabase_client.listar_propiedades_con_datos()
+    return [
+        {
+            "id": f["id"], "nombre": f["nombre"], "zona": f.get("zona"),
+            "actualizado_en": f.get("actualizado_en"),
+            "avisos": completitud.evaluar_propiedad(f.get("datos") or {}),
+        }
+        for f in filas
+    ]
 
 
 @router.get("/admin/propiedades/{property_id}")
