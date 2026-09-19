@@ -283,12 +283,12 @@ async def obtener_reportes_pendientes() -> list[dict]:
 # Accesos temporales para huéspedes (ver app/public.py)
 # ------------------------------------------------------------
 
-async def crear_acceso_temporal(property_id: str, horas: int) -> str | None:
+async def crear_acceso_temporal(property_id: str, horas: int, unit_id: str | None = None) -> str | None:
     import secrets
     token = secrets.token_urlsafe(18)
     expira_en = (datetime.now(timezone.utc) + timedelta(hours=horas)).isoformat()
     url = f"{_base_url()}/rest/v1/accesos_temporales"
-    payload = {"token": token, "property_id": property_id, "expira_en": expira_en}
+    payload = {"token": token, "property_id": property_id, "unit_id": unit_id, "expira_en": expira_en}
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
         if resp.status_code in (200, 201, 204):

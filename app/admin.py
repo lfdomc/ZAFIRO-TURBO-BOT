@@ -138,6 +138,7 @@ async def _correr_importacion(datos: dict):
             await property_service.guardar_y_reindexar_property(prop)
             state.avanzar_importacion(prop.get("name", prop.get("id", "")))
         state.finalizar_importacion(error=None)
+        await _disparar_redeploy_sitio()
     except Exception as e:
         logger.error(f"Error en importación masiva: {e}")
         state.finalizar_importacion(error=str(e))

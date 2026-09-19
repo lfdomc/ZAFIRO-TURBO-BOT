@@ -25,6 +25,6 @@ async def consultar_propiedad(token: str):
     await supabase_client.registrar_uso_acceso_temporal(token, acceso["usos"])
 
     return {
-        "propiedad": guest_filter.filtrar_property_para_huesped(datos),
+        "propiedad": guest_filter.filtrar_property_para_huesped(datos, acceso.get("unit_id")),
         "expira_en": acceso["expira_en"],
     }

@@ -287,6 +287,18 @@ función por una llamada a la API — la comparación, el "aplicar
 cambios" y el pre-llenado de propiedades nuevas siguen funcionando
 igual, sin tocar nada más.
 
+### Enlace acotado a la unidad correcta (complejos con varias casas/apartamentos)
+
+Si la propiedad tiene varias unidades (ej. Casa Praia con 6 casas, Urban
+Escalante con varios apartamentos), el bot detecta de qué unidad puntual
+vino la pregunta y genera el link **solo para esa unidad** — comparte lo
+que es del complejo entero (dirección, reglas comunes, check-in en
+caseta de seguridad) pero nunca el wifi/código de acceso de las casas
+vecinas. Si además esa unidad ya tiene su propia guía externa
+(`unit.guiaDigital.url` — ej. `auditoria.zafiropm.com/...`, como ya
+tenés cargado en varias unidades de Praia), usa esa directo, con
+prioridad sobre `link_guia_publica` de la propiedad completa.
+
 ## Por qué Supabase "no se activa/desactiva" por request
 
 No hace falta un interruptor manual: el sitio web es estático (nunca

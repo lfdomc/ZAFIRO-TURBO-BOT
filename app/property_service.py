@@ -115,6 +115,11 @@ async def guardar_y_reindexar_property(prop: dict) -> None:
     if prop.get("note"):
         await _chunk(f"{nombre} — Nota interna: {prop['note']}", "nota_interna", pid)
 
+    unidades = prop.get("units", [])
+    if len(unidades) > 1:
+        lista = "; ".join(f"{u.get('name', '')} ({u.get('num', '')})".strip() for u in unidades if u.get("name"))
+        await _chunk(f"{nombre} — Este complejo tiene {len(unidades)} unidades: {lista}", "info", pid)
+
     campos_personalizados = prop.get("camposPersonalizados") or {}
     if campos_personalizados:
         defs = {d["id"]: d["etiqueta"] for d in await supabase_client.listar_campos_personalizados()}

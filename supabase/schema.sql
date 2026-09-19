@@ -124,6 +124,7 @@ create index if not exists idx_reportes_estado on reportes_incidencias(estado);
 create table if not exists accesos_temporales (
   token text primary key,
   property_id text not null references properties(id) on delete cascade,
+  unit_id text,                   -- null = todo el complejo (propiedades de 1 sola unidad); si no, solo esa unidad + lo compartido del complejo
   expira_en timestamptz not null,
   usos int not null default 0,
   creado_en timestamptz not null default now()

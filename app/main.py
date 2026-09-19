@@ -178,14 +178,29 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     try:
         if fragmentos and fragmentos[0].get("categoria") == "check_in" and fragmentos[0].get("property_id"):
             property_id_detectado = fragmentos[0]["property_id"]
+            unit_id_detectado = fragmentos[0].get("unit_id")  # None = propiedad de una sola unidad
             datos_prop = await supabase_client.obtener_property(property_id_detectado)
             campos_prop = (datos_prop or {}).get("camposPersonalizados") or {}
-            link_guia_existente = campos_prop.get("link_guia_publica")
+
+            # Prioridad: 1) guía propia de ESA unidad (ya existe en tus datos
+            # reales, ej. auditoria.zafiropm.com por unidad — la más
+            # específica posible), 2) guía de la propiedad completa
+            # (link_guia_publica, para propiedades de una sola unidad),
+            # 3) link temporal propio, acotado a esa unidad si se detectó.
+            link_guia_unidad = None
+            if unit_id_detectado and datos_prop:
+                unidad_match = next((u for u in datos_prop.get("units", []) if u.get("id") == unit_id_detectado), None)
+                if unidad_match:
+                    link_guia_unidad = (unidad_match.get("guiaDigital") or {}).get("url")
+
+            link_guia_existente = link_guia_unidad or campos_prop.get("link_guia_publica")
 
             if link_guia_existente:
                 await telegram_client.enviar_mensaje(chat_id, f"🔗 Link para el huésped:\n{link_guia_existente}")
             elif settings.SITE_BASE_URL:
-                token = await supabase_client.crear_acceso_temporal(property_id_detectado, settings.ACCESO_TEMPORAL_HORAS)
+                token = await supabase_client.crear_acceso_temporal(
+                    property_id_detectado, settings.ACCESO_TEMPORAL_HORAS, unit_id_detectado
+                )
                 if token:
                     link = f"{settings.SITE_BASE_URL}/consulta?token={token}"
                     await telegram_client.enviar_mensaje(
