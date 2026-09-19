@@ -36,6 +36,10 @@ def _link_wa_me(numero: str, texto: str) -> str:
     return f"https://wa.me/{numero_limpio}?text={quote(texto)}"
 
 
+def _whatsapp_api_configurada() -> bool:
+    return bool(settings.WHATSAPP_PHONE_NUMBER_ID and settings.WHATSAPP_ACCESS_TOKEN)
+
+
 async def crear_y_programar_reporte(
     chat_id: int, tipo: str, property_id: str | None, nombre_propiedad: str | None,
     detalle: str, numero_destino: str | None,
@@ -52,13 +56,26 @@ async def crear_y_programar_reporte(
         await telegram_client.enviar_mensaje(
             chat_id,
             f"⚠️ Parece un reporte de *{tipo}* para {nombre_propiedad or 'esta propiedad'}, pero no hay número de "
-            f"WhatsApp de {tipo} configurado ahí. Agregalo como campo personalizado "
-            f"('whatsapp_{tipo}') desde la pestaña Admin del sitio."
+            f"WhatsApp de {tipo} configurado ahí. Agregalo en Admin → Configuración general (o como campo "
+            f"personalizado 'whatsapp_{tipo}' en esa propiedad si necesita uno distinto)."
         )
         return
 
     texto_wa = _texto_reporte(tipo, nombre_propiedad or "propiedad sin identificar", "", detalle)
     link = _link_wa_me(numero_destino, texto_wa)
+
+    if not _whatsapp_api_configurada():
+        # El envío automático (Meta Cloud API) todavía no está activado —
+        # no prometemos una cuenta regresiva que no va a pasar. Solo el
+        # botón para reenviarlo a mano, como ya hacías antes.
+        await supabase_client.actualizar_estado_reporte(report_id, "manual")
+        botones = [[{"text": "📲 Enviar yo por WhatsApp", "url": link}]]
+        texto_telegram = (
+            f"🔧 Parece un reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}:\n\n{detalle}\n\n"
+            f"Reenvialo al grupo de WhatsApp correspondiente con el botón de abajo."
+        )
+        await telegram_client.enviar_mensaje_con_botones(chat_id, texto_telegram, botones)
+        return
 
     botones = [
         [{"text": "📲 Enviar yo por WhatsApp", "url": link}],
@@ -83,6 +100,13 @@ async def _esperar_y_enviar(report_id: str, segundos_espera: float):
 
 
 async def _procesar_reporte_pendiente(report_id: str):
+    if not _whatsapp_api_configurada():
+        # Defensivo: si quedó algún reporte viejo en 'pendiente' de antes
+        # de desactivar esto, no reintentes ni avises de nuevo — solo
+        # archivalo en silencio.
+        await supabase_client.actualizar_estado_reporte(report_id, "cancelado")
+        return
+
     reporte = await supabase_client.obtener_reporte(report_id)
     if not reporte or reporte["estado"] != "pendiente":
         return  # ya fue cancelado, ya se envió, o nunca tuvo destino
@@ -123,6 +147,11 @@ async def rehidratar_reportes_pendientes():
     un reinicio de Railway mientras un reporte esperaba su ventana de
     tiempo lo dejaría pendiente para siempre en Supabase, sin que nadie
     lo mande nunca."""
+    if not _whatsapp_api_configurada():
+        # El envío automático está desactivado — no tiene sentido reintentar
+        # reportes viejos (fallarían igual y volverían a avisar por error).
+        return
+
     try:
         pendientes = await supabase_client.obtener_reportes_pendientes()
     except Exception as e:
