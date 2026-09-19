@@ -70,10 +70,7 @@ async def crear_y_programar_reporte(
         # botón para reenviarlo a mano, como ya hacías antes.
         await supabase_client.actualizar_estado_reporte(report_id, "manual")
         botones = [[{"text": "📲 Enviar yo por WhatsApp", "url": link}]]
-        texto_telegram = (
-            f"🔧 Parece un reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}:\n\n{detalle}\n\n"
-            f"Reenvialo al grupo de WhatsApp correspondiente con el botón de abajo."
-        )
+        texto_telegram = f"🔧 Reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}\n\n{detalle}"
         await telegram_client.enviar_mensaje_con_botones(chat_id, texto_telegram, botones)
         return
 
@@ -82,7 +79,7 @@ async def crear_y_programar_reporte(
         [{"text": "✅ Ya avisé / no hace falta", "callback_data": f"cancelar_reporte:{report_id}"}],
     ]
     texto_telegram = (
-        f"🔧 Parece un reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}:\n\n{detalle}\n\n"
+        f"🔧 Reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}\n\n{detalle}\n\n"
         f"Si nadie lo envía en {minutos} min, lo mando yo automáticamente por WhatsApp."
     )
     await telegram_client.enviar_mensaje_con_botones(chat_id, texto_telegram, botones)

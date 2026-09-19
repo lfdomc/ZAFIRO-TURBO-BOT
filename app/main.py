@@ -195,8 +195,14 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     await telegram_client.indicar_escribiendo(chat_id)
 
-    # --- Caché de FAQ: pregunta idéntica repetida no vuelve a gastar embedding + Gemini ---
-    clave_cache = _normalizar_para_cache(texto_usuario)
+    # Detectamos primero de qué propiedad habla (si la nombra) — se usa
+    # tanto para la clave del caché como para el historial, así una
+    # pregunta genérica ("¿cuál es el código?") nunca reutiliza la
+    # respuesta cacheada ni el historial de una casa distinta.
+    property_id_mencionada = await _detectar_property_id(texto_usuario)
+
+    # --- Caché de FAQ: pregunta idéntica repetida (de la MISMA propiedad) no vuelve a gastar embedding + Gemini ---
+    clave_cache = f"{property_id_mencionada or 'general'}::{_normalizar_para_cache(texto_usuario)}"
     respuesta_cacheada = state.cache_faq_get(clave_cache)
     if respuesta_cacheada:
         await telegram_client.enviar_mensaje(chat_id, respuesta_cacheada)
@@ -207,13 +213,12 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
         await telegram_client.enviar_mensaje(chat_id, "⚠️ Tuve un problema técnico generando la búsqueda. Intentá de nuevo.")
         return {"ok": True}
 
-    property_id_mencionada = await _detectar_property_id(texto_usuario)
     fragmentos = await supabase_client.buscar_contexto_semantico(
         texto_usuario, embedding, match_count=MATCH_COUNT, audiencia="admin", property_id=property_id_mencionada
     )
     contexto = _construir_contexto(fragmentos)
 
-    historial = await supabase_client.obtener_historial_conversacion(telegram_id)
+    historial = await supabase_client.obtener_historial_conversacion(telegram_id, property_id_mencionada)
     system_prompt = SYSTEM_PROMPT_ADMIN
     if contexto:
         system_prompt += f"\n\nContexto recuperado:\n{contexto}"
@@ -235,8 +240,8 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     await telegram_client.enviar_mensaje(chat_id, respuesta)
 
     try:
-        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario)
-        await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta)
+        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada)
+        await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta, property_id_mencionada)
     except Exception as e:
         logger.warning(f"No se pudo guardar el turno en el historial (no afecta la respuesta ya enviada): {e}")
 

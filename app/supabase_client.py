@@ -358,10 +358,15 @@ async def guardar_guia_externa(property_id: str, guia_data: dict) -> bool:
 # Historial de conversación
 # ------------------------------------------------------------
 
-async def obtener_historial_conversacion(telegram_id: str, limite: int = 6) -> list[dict]:
+async def obtener_historial_conversacion(telegram_id: str, property_id: str | None, limite: int = 6) -> list[dict]:
+    """Solo trae turnos anteriores de la MISMA propiedad detectada (o
+    turnos igual de 'sin propiedad detectada' si property_id es None)
+    — evita que el contexto de una casa se filtre a la respuesta de
+    otra cuando el admin salta de un tema a otro en el mismo chat."""
+    filtro_propiedad = f"property_id.eq.{property_id}" if property_id else "property_id.is.null"
     url = (
         f"{_base_url()}/rest/v1/historial_conversacion"
-        f"?telegram_id=eq.{telegram_id}&order=creado_en.desc&limit={limite}"
+        f"?telegram_id=eq.{telegram_id}&{filtro_propiedad}&order=creado_en.desc&limit={limite}"
     )
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, headers=_headers())
@@ -375,9 +380,9 @@ async def obtener_historial_conversacion(telegram_id: str, limite: int = 6) -> l
         return []
 
 
-async def guardar_mensaje_historial(telegram_id: str, rol: str, contenido: str) -> None:
+async def guardar_mensaje_historial(telegram_id: str, rol: str, contenido: str, property_id: str | None = None) -> None:
     url = f"{_base_url()}/rest/v1/historial_conversacion"
-    payload = {"telegram_id": telegram_id, "role": rol, "contenido": contenido}
+    payload = {"telegram_id": telegram_id, "role": rol, "contenido": contenido, "property_id": property_id}
     async with httpx.AsyncClient(timeout=15.0) as client:
         await client.post(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
 
