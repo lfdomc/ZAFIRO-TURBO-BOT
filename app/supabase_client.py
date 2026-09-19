@@ -176,7 +176,7 @@ async def eliminar_property(property_id: str) -> bool:
 # ------------------------------------------------------------
 
 async def listar_campos_personalizados() -> list[dict]:
-    url = f"{_base_url()}/rest/v1/custom_field_defs?select=id,etiqueta,tipo&order=creado_en.asc"
+    url = f"{_base_url()}/rest/v1/custom_field_defs?select=id,etiqueta,tipo,nivel&order=creado_en.asc"
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, headers=_headers())
         if resp.status_code == 200:
@@ -184,9 +184,9 @@ async def listar_campos_personalizados() -> list[dict]:
         return []
 
 
-async def crear_campo_personalizado(field_id: str, etiqueta: str, tipo: str = "texto") -> bool:
+async def crear_campo_personalizado(field_id: str, etiqueta: str, tipo: str = "texto", nivel: str = "propiedad") -> bool:
     url = f"{_base_url()}/rest/v1/custom_field_defs"
-    payload = {"id": field_id, "etiqueta": etiqueta, "tipo": tipo}
+    payload = {"id": field_id, "etiqueta": etiqueta, "tipo": tipo, "nivel": nivel}
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
             url, json=payload,

@@ -92,9 +92,12 @@ async def crear_campo(campo: dict, x_admin_key: str | None = Header(default=None
     _verificar_admin_key(x_admin_key)
     field_id = (campo.get("id") or "").strip()
     etiqueta = (campo.get("etiqueta") or "").strip()
+    nivel = campo.get("nivel", "propiedad")
+    if nivel not in ("propiedad", "unidad"):
+        nivel = "propiedad"
     if not field_id or not etiqueta:
         raise HTTPException(status_code=400, detail="El campo necesita 'id' y 'etiqueta'.")
-    ok = await supabase_client.crear_campo_personalizado(field_id, etiqueta, campo.get("tipo", "texto"))
+    ok = await supabase_client.crear_campo_personalizado(field_id, etiqueta, campo.get("tipo", "texto"), nivel)
     if not ok:
         raise HTTPException(status_code=500, detail="No se pudo crear el campo.")
     return {"ok": True}

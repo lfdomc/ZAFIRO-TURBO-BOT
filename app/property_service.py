@@ -121,12 +121,13 @@ async def guardar_y_reindexar_property(prop: dict) -> None:
         await _chunk(f"{nombre} — Este complejo tiene {len(unidades)} unidades: {lista}", "info", pid)
 
     campos_personalizados = prop.get("camposPersonalizados") or {}
+    todos_los_campos = await supabase_client.listar_campos_personalizados()
+    etiquetas_campos = {d["id"]: d["etiqueta"] for d in todos_los_campos}
     if campos_personalizados:
-        defs = {d["id"]: d["etiqueta"] for d in await supabase_client.listar_campos_personalizados()}
         for clave, valor in campos_personalizados.items():
             if not valor:
                 continue
-            etiqueta = defs.get(clave, clave)
+            etiqueta = etiquetas_campos.get(clave, clave)
             await _chunk(f"{nombre} — {etiqueta}: {valor}", "info", pid)
 
     for unidad in prop.get("units", []):
@@ -175,6 +176,13 @@ async def guardar_y_reindexar_property(prop: dict) -> None:
 
         if unidad.get("note"):
             await _chunk(f"{nombre} — {nombre_unidad} — Nota interna: {unidad['note']}", "nota_interna", pid, uid)
+
+        campos_unidad = unidad.get("camposPersonalizados") or {}
+        for clave, valor in campos_unidad.items():
+            if not valor:
+                continue
+            etiqueta = etiquetas_campos.get(clave, clave)
+            await _chunk(f"{nombre} — {nombre_unidad} — {etiqueta}: {valor}", "info", pid, uid)
 
 
 async def reindexar_general(datos: dict) -> None:

@@ -88,6 +88,7 @@ create table if not exists custom_field_defs (
   id text primary key,
   etiqueta text not null,
   tipo text not null default 'texto',
+  nivel text not null default 'propiedad',  -- 'propiedad' | 'unidad' — dónde se edita/aplica este campo
   creado_en timestamptz not null default now()
 );
 
