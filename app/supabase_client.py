@@ -441,11 +441,30 @@ async def obtener_todo_para_export() -> dict:
         config = {fila["clave"]: fila["valor"] for fila in resp_config.json()}
         propiedades = [fila["datos"] for fila in resp_props.json()]
 
+        # masterTable se DERIVA de properties[] en cada export — nunca se
+        # guarda por separado — así nunca puede quedar desactualizada
+        # cuando se agrega/edita una propiedad (antes era una copia plana
+        # mantenida a mano, que se desincronizaba justo en esos casos).
+        masterTable_derivado = []
+        for p in propiedades:
+            for u in p.get("units", []) or []:
+                masterTable_derivado.append({
+                    "property": p.get("name", ""),
+                    "unit": f"{u.get('name', '')} ({u.get('num', '')})".strip(),
+                    "pax": u.get("pax", ""),
+                    "parqueo": u.get("parqueo", ""),
+                    "forms": u.get("forms", "NO"),
+                    "correo": u.get("correo", "NO"),
+                    "whatsapp": u.get("whatsapp", "NO"),
+                    "app": u.get("app", "NO"),
+                    "propertyId": p.get("id", ""),
+                })
+
         resultado = {
             "checkInGeneral": config.get("checkInGeneral") or "",
             "checkOutGeneral": config.get("checkOutGeneral") or "",
             "general": config.get("general") or GENERAL_VACIO,
-            "masterTable": config.get("masterTable") or [],
+            "masterTable": masterTable_derivado,
             "properties": propiedades,
         }
         return resultado

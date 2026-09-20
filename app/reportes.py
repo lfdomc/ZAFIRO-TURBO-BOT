@@ -24,11 +24,19 @@ logger = logging.getLogger("reportes")
 _tareas_programadas: dict[str, asyncio.Task] = {}
 
 
+def _saludo_por_hora() -> str:
+    from datetime import datetime, timezone, timedelta
+    hora_cr = datetime.now(timezone(timedelta(hours=-6))).hour  # Costa Rica no usa horario de verano
+    if hora_cr < 12:
+        return "Buenos días"
+    if hora_cr < 19:
+        return "Buenas tardes"
+    return "Buenas noches"
+
+
 def _texto_reporte(tipo: str, propiedad: str, unidad: str, detalle: str) -> str:
-    encabezado = f"Reporte de {tipo} — {propiedad}"
-    if unidad:
-        encabezado += f" ({unidad})"
-    return f"{encabezado}:\n{detalle}"
+    lugar = f"{propiedad} ({unidad})" if unidad else propiedad
+    return f"*Reporte de {tipo}*\n\n{_saludo_por_hora()}, nos reportan de {lugar}:\n{detalle}"
 
 
 def _link_wa_me(numero: str, texto: str) -> str:
