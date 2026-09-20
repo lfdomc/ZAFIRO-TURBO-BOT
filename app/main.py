@@ -28,6 +28,10 @@ app.include_router(public.router)
 @app.on_event("startup")
 async def _al_arrancar():
     await reportes.rehidratar_reportes_pendientes()
+    try:
+        await supabase_client.borrar_historial_antiguo(settings.RETENCION_HISTORIAL_DIAS)
+    except Exception as e:
+        logger.error(f"Fallo limpiando historial antiguo al arrancar: {e}")
 
 MATCH_COUNT = 10
 VERSION_BACKEND = "2026-09-18-fase1-admin"

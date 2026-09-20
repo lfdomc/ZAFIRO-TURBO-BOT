@@ -45,6 +45,11 @@ class Settings:
     # el reporte solo por WhatsApp si nadie tocó ninguno de los botones.
     AUTO_ENVIO_WHATSAPP_MINUTOS: int = int(os.environ.get("AUTO_ENVIO_WHATSAPP_MINUTOS", "10"))
 
+    # Días de retención del historial de conversación — lo que sea más
+    # viejo que esto se borra solo al arrancar el proceso, para que la
+    # tabla no crezca sin límite (default: ~4 meses).
+    RETENCION_HISTORIAL_DIAS: int = int(os.environ.get("RETENCION_HISTORIAL_DIAS", "120"))
+
     # URL pública del sitio en Vercel (sin / al final) — se usa para
     # armar el link de consulta temporal que el bot le da al admin.
     SITE_BASE_URL: str = os.environ.get("SITE_BASE_URL", "").rstrip("/")

@@ -354,6 +354,18 @@ async def guardar_guia_externa(property_id: str, guia_data: dict) -> bool:
     )
 
 
+async def borrar_historial_antiguo(dias: int) -> None:
+    """Borra turnos de historial más viejos que `dias` — se llama al
+    arrancar el proceso (ver main.py), así la tabla nunca crece sin
+    límite. Es un no-op barato si no hay nada tan viejo todavía."""
+    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    url = f"{_base_url()}/rest/v1/historial_conversacion?creado_en=lt.{limite}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error limpiando historial antiguo: HTTP {resp.status_code}: {resp.text}")
+
+
 # ------------------------------------------------------------
 # Historial de conversación
 # ------------------------------------------------------------
