@@ -1,4 +1,5 @@
 import re
+import difflib
 import logging
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,39 +48,91 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in texto if unicodedata.category(c) != "Mn")
 
 
-async def _detectar_property_id(texto_usuario: str) -> str | None:
-    """Si el mensaje menciona claramente el nombre de UNA sola
-    propiedad (ej. 'Urban', 'Praia', 'Providencia'), devuelve su id
-    para enfocar la búsqueda solo ahí — así no compite por espacio en
-    el top-N contra las otras 11 propiedades y no se "olvida" de
-    unidades que sí están cargadas."""
-    propiedades = await supabase_client.listar_propiedades_resumen()
+async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, str | None]:
+    """Devuelve (property_id, unit_id). Revisa primero coincidencias de
+    UNIDAD puntual — por su nombre, su `num`, o un alias cargado
+    a mano (ej. 'Palma Real'/'LPR 241' para Del Roble, '1422' para
+    Qbo) — porque son identificadores más específicos y confiables que
+    el nombre de la propiedad entera. Si no hay una unidad clara, cae
+    al nombre de la propiedad (como antes)."""
+    filas = await supabase_client.listar_propiedades_con_datos()
     texto_norm = _normalizar(texto_usuario)
 
-    coincidencias = set()
-    for p in propiedades:
-        palabras = [w for w in _normalizar(p["nombre"]).split() if len(w) >= 4 and w not in PALABRAS_GENERICAS]
+    coincidencias_unidad = set()
+    for f in filas:
+        datos = f.get("datos") or {}
+        for u in datos.get("units", []) or []:
+            candidatos = [c for c in [u.get("name"), u.get("num"), *(u.get("alias") or [])] if c]
+            for candidato in candidatos:
+                cnorm = _normalizar(str(candidato)).strip()
+                if len(cnorm) >= 3 and cnorm in texto_norm:
+                    coincidencias_unidad.add((f["id"], u.get("id")))
+                    break
+
+    if len(coincidencias_unidad) == 1:
+        return coincidencias_unidad.pop()
+
+    coincidencias_prop = set()
+    for f in filas:
+        palabras = [w for w in _normalizar(f["nombre"]).split() if len(w) >= 3 and w not in PALABRAS_GENERICAS]
         if any(w in texto_norm for w in palabras):
-            coincidencias.add(p["id"])
+            coincidencias_prop.add(f["id"])
 
-    return coincidencias.pop() if len(coincidencias) == 1 else None
+    if len(coincidencias_prop) == 1:
+        return coincidencias_prop.pop(), None
+
+    return None, None
 
 
-async def _pedir_propiedad_con_botones(chat_id: int, prefijo: str, texto: str, datos_extra: dict) -> None:
+async def _propiedades_mas_cercanas(texto_usuario: str, maximo: int = 2) -> list[dict]:
+    """Cuando no hay una coincidencia clara, en vez de ofrecer TODAS
+    las propiedades como botones (una lista larga y fea), se buscan
+    las `maximo` que más se parecen a algo mencionado en el mensaje —
+    por nombre de propiedad, nombre de unidad, o alias."""
+    filas = await supabase_client.listar_propiedades_con_datos()
+    texto_norm = _normalizar(texto_usuario)
+    palabras_mensaje = [w for w in texto_norm.split() if len(w) >= 3]
+    if not palabras_mensaje:
+        return []
+
+    puntajes = []
+    for f in filas:
+        datos = f.get("datos") or {}
+        candidatos = [datos.get("name", f["nombre"])]
+        for u in datos.get("units", []) or []:
+            candidatos.extend([c for c in [u.get("name"), *(u.get("alias") or [])] if c])
+
+        mejor = 0.0
+        for candidato in candidatos:
+            for palabra_c in _normalizar(str(candidato)).split():
+                if len(palabra_c) < 3:
+                    continue
+                for palabra_m in palabras_mensaje:
+                    ratio = difflib.SequenceMatcher(None, palabra_c, palabra_m).ratio()
+                    mejor = max(mejor, ratio)
+        puntajes.append((f["id"], f["nombre"], mejor))
+
+    puntajes.sort(key=lambda t: t[2], reverse=True)
+    return [{"id": pid, "nombre": nombre} for pid, nombre, score in puntajes[:maximo] if score >= 0.6]
+
+
+async def _pedir_propiedad_con_botones(chat_id: int, prefijo: str, texto_base: str, texto_usuario_original: str, datos_extra: dict) -> None:
     """Cuando no se identificó la propiedad con certeza, en vez de
-    pedir que se reenvíe el mensaje a mano, se ofrece un botón por
-    propiedad — tocarlo completa la acción (reporte o link) que había
-    quedado pendiente."""
-    propiedades = await supabase_client.listar_propiedades_resumen()
-    if not propiedades:
-        await telegram_client.enviar_mensaje(chat_id, texto)
+    ofrecer TODAS las propiedades (una lista larga y fea) u obligar a
+    reenviar el mensaje a mano, se ofrecen las 1-2 que más se parecen
+    a algo mencionado — tocar el botón completa la acción pendiente."""
+    cercanas = await _propiedades_mas_cercanas(texto_usuario_original)
+    if not cercanas:
+        await telegram_client.enviar_mensaje(
+            chat_id, f"{texto_base}\n\nDecime el nombre exacto de la propiedad para poder continuar."
+        )
         return
     sel_id = state.crear_seleccion_pendiente({"chat_id": chat_id, **datos_extra})
     botones = [
         [{"text": p["nombre"], "callback_data": f"{prefijo}:{sel_id}:{p['id']}"}]
-        for p in propiedades
+        for p in cercanas
     ]
-    await telegram_client.enviar_mensaje_con_botones(chat_id, texto, botones)
+    await telegram_client.enviar_mensaje_con_botones(chat_id, f"{texto_base} ¿Es alguna de estas?", botones)
 
 
 async def _generar_link_huesped(chat_id: int, property_id: str, unit_id: str | None) -> None:
@@ -226,6 +279,19 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
                 state.eliminar_seleccion_pendiente(sel_id)
                 propiedades = await supabase_client.listar_propiedades_resumen()
                 nombre = next((p["nombre"] for p in propiedades if p["id"] == property_id), property_id)
+
+                # El turno original quedó guardado en el historial con
+                # property_id=NULL (en el momento en que llegó, todavía no
+                # se sabía cuál era) — ahora que el admin lo aclaró con el
+                # botón, se guarda también bajo la propiedad correcta, para
+                # que una pregunta de seguimiento sobre esa misma casa sí
+                # tenga este turno como contexto.
+                telegram_id_pendiente = pendiente.get("telegram_id")
+                if telegram_id_pendiente and pendiente.get("detalle"):
+                    await supabase_client.guardar_mensaje_historial(
+                        telegram_id_pendiente, "user", pendiente["detalle"], property_id
+                    )
+
                 if prefijo == "epr":
                     numero_destino = await supabase_client.obtener_numero_whatsapp(property_id, pendiente["tipo_incidencia"])
                     await telegram_client.responder_callback(callback["id"], f"Asignado a {nombre}")
@@ -277,7 +343,7 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     # tanto para la clave del caché como para el historial, así una
     # pregunta genérica ("¿cuál es el código?") nunca reutiliza la
     # respuesta cacheada ni el historial de una casa distinta.
-    property_id_mencionada = await _detectar_property_id(texto_usuario)
+    property_id_mencionada, unit_id_mencionado = await _detectar_property_y_unidad(texto_usuario)
 
     # --- Caché de FAQ: pregunta idéntica repetida (de la MISMA propiedad) no vuelve a gastar embedding + Gemini ---
     clave_cache = f"{property_id_mencionada or 'general'}::{_normalizar_para_cache(texto_usuario)}"
@@ -296,10 +362,18 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     )
     contexto = _construir_contexto(fragmentos)
 
-    historial = await supabase_client.obtener_historial_conversacion(telegram_id, property_id_mencionada)
+    historial = await supabase_client.obtener_historial_conversacion(telegram_id, property_id_mencionada, unit_id_mencionado)
     system_prompt = SYSTEM_PROMPT_ADMIN
     if contexto:
         system_prompt += f"\n\nContexto recuperado:\n{contexto}"
+        if not property_id_mencionada:
+            system_prompt += (
+                "\n\nAVISO: el mensaje no nombró ninguna propiedad puntual — el contexto de arriba es lo que "
+                "más se pareció semánticamente a la pregunta, pero podría ser de una propiedad distinta a la "
+                "que el admin tenía en mente. Aclará en tu respuesta de qué propiedad es la información que "
+                "estás dando (ej. 'Asumiendo que es sobre Qbo Skyhomes...'), en vez de responder como si fuera "
+                "obvio o seguro cuál es."
+            )
     else:
         system_prompt += "\n\nNo se recuperó ningún fragmento de contexto para esta pregunta."
 
@@ -318,22 +392,26 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     await telegram_client.enviar_mensaje(chat_id, respuesta)
 
     try:
-        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada)
-        await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta, property_id_mencionada)
+        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado)
+        await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta, property_id_mencionada, unit_id_mencionado)
     except Exception as e:
         logger.warning(f"No se pudo guardar el turno en el historial (no afecta la respuesta ya enviada): {e}")
+
+    # unit_id de la unidad puntual detectada — preferimos la coincidencia
+    # exacta por alias/num (más confiable) y caemos al de la búsqueda
+    # semántica solo si esa no encontró nada.
+    unit_id_efectivo = unit_id_mencionado or (fragmentos[0].get("unit_id") if fragmentos else None)
 
     # --- Link para el huésped (si la pregunta fue de check-in/acceso) ---
     try:
         if fragmentos and fragmentos[0].get("categoria") == "check_in":
             if property_id_mencionada:
-                unit_id_detectado = fragmentos[0].get("unit_id")  # None = propiedad de una sola unidad
-                await _generar_link_huesped(chat_id, property_id_mencionada, unit_id_detectado)
+                await _generar_link_huesped(chat_id, property_id_mencionada, unit_id_efectivo)
             else:
                 await _pedir_propiedad_con_botones(
                     chat_id, "epl",
-                    "No reconocí con certeza de qué propiedad es esta consulta. Elegí una para generar el link del huésped:",
-                    {},
+                    "No reconocí con certeza de qué propiedad es esta consulta.",
+                    texto_usuario, {"detalle": texto_usuario, "telegram_id": telegram_id},
                 )
     except Exception as e:
         logger.error(f"Fallo generando el link para el huésped: {e}")
@@ -343,14 +421,22 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
         tipo_incidencia = await gemini_client.clasificar_incidencia(texto_usuario)
         if tipo_incidencia in ("mantenimiento", "limpieza"):
             if property_id_mencionada:
-                # Solo confiamos en fragmentos[0] para el nombre porque la
-                # búsqueda ya vino filtrada por esta misma propiedad
-                # (property_id=property_id_mencionada más arriba) — nunca es
-                # un resultado "de cualquier propiedad" sin relación.
-                nombre_propiedad_detectada = fragmentos[0].get("nombre_propiedad") if fragmentos else None
+                # El reporte debe identificar la CASA puntual (ej. "Praia 41"),
+                # no el condominio/propiedad entera (ej. "Casa Praia") — si se
+                # detectó una unidad, se usa su nombre propio; si no, el de la
+                # propiedad como respaldo.
+                nombre_reporte = fragmentos[0].get("nombre_propiedad") if fragmentos else None
+                if unit_id_efectivo:
+                    datos_prop_reporte = await supabase_client.obtener_property(property_id_mencionada)
+                    unidad_match = next(
+                        (u for u in (datos_prop_reporte or {}).get("units", []) if u.get("id") == unit_id_efectivo), None
+                    )
+                    if unidad_match and unidad_match.get("name"):
+                        nombre_reporte = unidad_match["name"]
+
                 numero_destino = await supabase_client.obtener_numero_whatsapp(property_id_mencionada, tipo_incidencia)
                 await reportes.crear_y_programar_reporte(
-                    chat_id, tipo_incidencia, property_id_mencionada, nombre_propiedad_detectada,
+                    chat_id, tipo_incidencia, property_id_mencionada, nombre_reporte,
                     texto_usuario, numero_destino,
                 )
             else:
@@ -358,12 +444,11 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
                 # jamás le adivinamos una (eso fue justo el bug: terminaba
                 # etiquetando el reporte con el primer resultado de una
                 # búsqueda sin filtrar, que podía ser cualquier propiedad).
-                # En su lugar, se lo preguntamos con botones.
+                # En su lugar, se ofrecen botones con las más parecidas.
                 await _pedir_propiedad_con_botones(
                     chat_id, "epr",
-                    f"🔧 Parece un reporte de {tipo_incidencia}, pero no reconocí con certeza de qué propiedad se "
-                    f"trata. Elegí una:",
-                    {"tipo_incidencia": tipo_incidencia, "detalle": texto_usuario},
+                    f"🔧 Parece un reporte de {tipo_incidencia}, pero no reconocí con certeza de qué propiedad se trata.",
+                    texto_usuario, {"tipo_incidencia": tipo_incidencia, "detalle": texto_usuario, "telegram_id": telegram_id},
                 )
     except Exception as e:
         logger.error(f"Fallo en la detección/creación de reporte: {e}")

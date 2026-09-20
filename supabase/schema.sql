@@ -142,11 +142,12 @@ create table if not exists historial_conversacion (
   telegram_id text not null,
   role text not null,
   contenido text not null,
-  property_id text,               -- de qué propiedad se detectó que hablaba este turno (null = ninguna en particular) — evita que el contexto de una casa se mezcle con el de otra al cambiar de tema
+  property_id text,               -- de qué propiedad se detectó que hablaba este turno (null = ninguna en particular)
+  unit_id text,                   -- de qué unidad puntual (null = propiedad entera o ninguna) — evita mezclar Praia 41 con Praia 37, por ejemplo
   creado_en timestamptz not null default now()
 );
 
-create index if not exists idx_historial_telegram on historial_conversacion(telegram_id, property_id, creado_en desc);
+create index if not exists idx_historial_telegram on historial_conversacion(telegram_id, property_id, unit_id, creado_en desc);
 
 -- ------------------------------------------------------------
 -- Log de errores del sistema (mismo patrón que ya usabas en JARVIS)
