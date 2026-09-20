@@ -64,6 +64,58 @@ async def _detectar_property_id(texto_usuario: str) -> str | None:
 
     return coincidencias.pop() if len(coincidencias) == 1 else None
 
+
+async def _pedir_propiedad_con_botones(chat_id: int, prefijo: str, texto: str, datos_extra: dict) -> None:
+    """Cuando no se identificó la propiedad con certeza, en vez de
+    pedir que se reenvíe el mensaje a mano, se ofrece un botón por
+    propiedad — tocarlo completa la acción (reporte o link) que había
+    quedado pendiente."""
+    propiedades = await supabase_client.listar_propiedades_resumen()
+    if not propiedades:
+        await telegram_client.enviar_mensaje(chat_id, texto)
+        return
+    sel_id = state.crear_seleccion_pendiente({"chat_id": chat_id, **datos_extra})
+    botones = [
+        [{"text": p["nombre"], "callback_data": f"{prefijo}:{sel_id}:{p['id']}"}]
+        for p in propiedades
+    ]
+    await telegram_client.enviar_mensaje_con_botones(chat_id, texto, botones)
+
+
+async def _generar_link_huesped(chat_id: int, property_id: str, unit_id: str | None) -> None:
+    """Prioridad: 1) la guía propia de ESA unidad (ej.
+    auditoria.zafiropm.com por unidad — la más específica posible),
+    2) la guía de la propiedad completa (link_guia_publica, para
+    propiedades de una sola unidad), 3) link temporal propio, acotado
+    a esa unidad si se detectó."""
+    datos_prop = await supabase_client.obtener_property(property_id)
+    campos_prop = (datos_prop or {}).get("camposPersonalizados") or {}
+
+    link_guia_unidad = None
+    if unit_id and datos_prop:
+        unidad_match = next((u for u in datos_prop.get("units", []) if u.get("id") == unit_id), None)
+        if unidad_match:
+            link_guia_unidad = (unidad_match.get("guiaDigital") or {}).get("url")
+
+    link_guia_existente = link_guia_unidad or campos_prop.get("link_guia_publica")
+
+    if link_guia_existente:
+        await telegram_client.enviar_mensaje(
+            chat_id,
+            "Si tenés cualquier otra consulta sobre la casa, acá tenés toda la información a mano: "
+            f"{link_guia_existente} 😊"
+        )
+    elif settings.SITE_BASE_URL:
+        token = await supabase_client.crear_acceso_temporal(property_id, settings.ACCESO_TEMPORAL_HORAS, unit_id)
+        if token:
+            link = f"{settings.SITE_BASE_URL}/consulta?token={token}"
+            await telegram_client.enviar_mensaje(
+                chat_id,
+                "Si tenés cualquier otra consulta sobre la casa, acá tenés toda la información a mano "
+                f"(el link queda activo por {settings.ACCESO_TEMPORAL_HORAS}h): {link} 😊"
+            )
+
+
 SYSTEM_PROMPT_ADMIN = (
     "Eres Sofía, la asistente virtual de reservas y atención de Zafiro Property "
     "Management, una empresa de alquileres vacacionales en Costa Rica. Le ayudás "
@@ -162,6 +214,28 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
             await telegram_client.responder_callback(
                 callback["id"], "Cancelado ✅" if cancelado else "Ya se había procesado."
             )
+        elif cb_data.startswith("epr:") or cb_data.startswith("epl:"):
+            # Eligió la propiedad correcta con un botón, para un reporte
+            # (epr) o un link de huésped (epl) que había quedado sin poder
+            # identificarla con certeza.
+            prefijo, sel_id, property_id = cb_data.split(":", 2)
+            pendiente = state.obtener_seleccion_pendiente(sel_id)
+            if not pendiente:
+                await telegram_client.responder_callback(callback["id"], "Esta selección ya venció — reenviá el mensaje original.")
+            else:
+                state.eliminar_seleccion_pendiente(sel_id)
+                propiedades = await supabase_client.listar_propiedades_resumen()
+                nombre = next((p["nombre"] for p in propiedades if p["id"] == property_id), property_id)
+                if prefijo == "epr":
+                    numero_destino = await supabase_client.obtener_numero_whatsapp(property_id, pendiente["tipo_incidencia"])
+                    await telegram_client.responder_callback(callback["id"], f"Asignado a {nombre}")
+                    await reportes.crear_y_programar_reporte(
+                        pendiente["chat_id"], pendiente["tipo_incidencia"], property_id, nombre,
+                        pendiente["detalle"], numero_destino,
+                    )
+                else:
+                    await telegram_client.responder_callback(callback["id"], f"Asignado a {nombre}")
+                    await _generar_link_huesped(pendiente["chat_id"], property_id, None)
         else:
             await telegram_client.responder_callback(callback["id"])
         return {"ok": True}
@@ -250,48 +324,17 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
         logger.warning(f"No se pudo guardar el turno en el historial (no afecta la respuesta ya enviada): {e}")
 
     # --- Link para el huésped (si la pregunta fue de check-in/acceso) ---
-    # Prioridad: 1) la guía pública que ya existe en guia.zafiropm.com
-    # (campo personalizado 'link_guia_publica', si está lleno para esa
-    # propiedad) — no tiene sentido duplicar algo que el empleador ya
-    # tiene armado. 2) si no está configurado, se genera un link
-    # temporal propio (token, vence solo).
     try:
-        if fragmentos and fragmentos[0].get("categoria") == "check_in" and fragmentos[0].get("property_id"):
-            property_id_detectado = fragmentos[0]["property_id"]
-            unit_id_detectado = fragmentos[0].get("unit_id")  # None = propiedad de una sola unidad
-            datos_prop = await supabase_client.obtener_property(property_id_detectado)
-            campos_prop = (datos_prop or {}).get("camposPersonalizados") or {}
-
-            # Prioridad: 1) guía propia de ESA unidad (ya existe en tus datos
-            # reales, ej. auditoria.zafiropm.com por unidad — la más
-            # específica posible), 2) guía de la propiedad completa
-            # (link_guia_publica, para propiedades de una sola unidad),
-            # 3) link temporal propio, acotado a esa unidad si se detectó.
-            link_guia_unidad = None
-            if unit_id_detectado and datos_prop:
-                unidad_match = next((u for u in datos_prop.get("units", []) if u.get("id") == unit_id_detectado), None)
-                if unidad_match:
-                    link_guia_unidad = (unidad_match.get("guiaDigital") or {}).get("url")
-
-            link_guia_existente = link_guia_unidad or campos_prop.get("link_guia_publica")
-
-            if link_guia_existente:
-                await telegram_client.enviar_mensaje(
-                    chat_id,
-                    "Si tenés cualquier otra consulta sobre la casa, acá tenés toda la información a mano: "
-                    f"{link_guia_existente} 😊"
+        if fragmentos and fragmentos[0].get("categoria") == "check_in":
+            if property_id_mencionada:
+                unit_id_detectado = fragmentos[0].get("unit_id")  # None = propiedad de una sola unidad
+                await _generar_link_huesped(chat_id, property_id_mencionada, unit_id_detectado)
+            else:
+                await _pedir_propiedad_con_botones(
+                    chat_id, "epl",
+                    "No reconocí con certeza de qué propiedad es esta consulta. Elegí una para generar el link del huésped:",
+                    {},
                 )
-            elif settings.SITE_BASE_URL:
-                token = await supabase_client.crear_acceso_temporal(
-                    property_id_detectado, settings.ACCESO_TEMPORAL_HORAS, unit_id_detectado
-                )
-                if token:
-                    link = f"{settings.SITE_BASE_URL}/consulta?token={token}"
-                    await telegram_client.enviar_mensaje(
-                        chat_id,
-                        "Si tenés cualquier otra consulta sobre la casa, acá tenés toda la información a mano "
-                        f"(el link queda activo por {settings.ACCESO_TEMPORAL_HORAS}h): {link} 😊"
-                    )
     except Exception as e:
         logger.error(f"Fallo generando el link para el huésped: {e}")
 
@@ -299,13 +342,29 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     try:
         tipo_incidencia = await gemini_client.clasificar_incidencia(texto_usuario)
         if tipo_incidencia in ("mantenimiento", "limpieza"):
-            property_id_detectado = fragmentos[0]["property_id"] if fragmentos else None
-            nombre_propiedad_detectada = fragmentos[0].get("nombre_propiedad") if fragmentos else None
-            numero_destino = await supabase_client.obtener_numero_whatsapp(property_id_detectado, tipo_incidencia)
-            await reportes.crear_y_programar_reporte(
-                chat_id, tipo_incidencia, property_id_detectado, nombre_propiedad_detectada,
-                texto_usuario, numero_destino,
-            )
+            if property_id_mencionada:
+                # Solo confiamos en fragmentos[0] para el nombre porque la
+                # búsqueda ya vino filtrada por esta misma propiedad
+                # (property_id=property_id_mencionada más arriba) — nunca es
+                # un resultado "de cualquier propiedad" sin relación.
+                nombre_propiedad_detectada = fragmentos[0].get("nombre_propiedad") if fragmentos else None
+                numero_destino = await supabase_client.obtener_numero_whatsapp(property_id_mencionada, tipo_incidencia)
+                await reportes.crear_y_programar_reporte(
+                    chat_id, tipo_incidencia, property_id_mencionada, nombre_propiedad_detectada,
+                    texto_usuario, numero_destino,
+                )
+            else:
+                # No se identificó con certeza ninguna propiedad por nombre —
+                # jamás le adivinamos una (eso fue justo el bug: terminaba
+                # etiquetando el reporte con el primer resultado de una
+                # búsqueda sin filtrar, que podía ser cualquier propiedad).
+                # En su lugar, se lo preguntamos con botones.
+                await _pedir_propiedad_con_botones(
+                    chat_id, "epr",
+                    f"🔧 Parece un reporte de {tipo_incidencia}, pero no reconocí con certeza de qué propiedad se "
+                    f"trata. Elegí una:",
+                    {"tipo_incidencia": tipo_incidencia, "detalle": texto_usuario},
+                )
     except Exception as e:
         logger.error(f"Fallo en la detección/creación de reporte: {e}")
 

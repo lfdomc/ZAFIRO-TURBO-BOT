@@ -7,12 +7,15 @@ Limitación honesta: si Railway reinicia el proceso (nuevo despliegue,
 caída), este estado se pierde — para un solo proceso, es suficiente.
 """
 import time
+import secrets
 
 TTL_IDEMPOTENCIA_SEG = 600
 TTL_CACHE_FAQ_SEG = 10800  # 3 horas — respuestas idénticas repetidas no vuelven a gastar embedding + Gemini
+TTL_SELECCION_PENDIENTE_SEG = 900  # 15 min para elegir la propiedad con el botón antes de que venza
 
 _updates_procesados: dict[int, float] = {}
 _cache_faq: dict[str, tuple[str, float]] = {}
+_selecciones_pendientes: dict[str, tuple[dict, float]] = {}
 
 _estado_importacion: dict = {
     "corriendo": False, "completadas": 0, "total": 0, "error": None, "propiedad_actual": None,
@@ -66,3 +69,30 @@ def finalizar_importacion(error: str | None = None):
 
 def obtener_estado_importacion() -> dict:
     return dict(_estado_importacion)
+
+
+def crear_seleccion_pendiente(datos: dict) -> str:
+    """Guarda temporalmente qué acción quedó esperando a que el admin
+    elija la propiedad con un botón (ver app/main.py). Vive solo en
+    memoria — si el proceso reinicia justo en esos minutos, el botón
+    vencido le pide reenviar el mensaje, no pasa nada grave."""
+    ahora = time.time()
+    _limpiar_vencidos(_selecciones_pendientes, TTL_SELECCION_PENDIENTE_SEG, ahora)
+    sel_id = secrets.token_urlsafe(5)
+    _selecciones_pendientes[sel_id] = (datos, ahora)
+    return sel_id
+
+
+def obtener_seleccion_pendiente(sel_id: str) -> dict | None:
+    entrada = _selecciones_pendientes.get(sel_id)
+    if not entrada:
+        return None
+    datos, ts = entrada
+    if (time.time() - ts) > TTL_SELECCION_PENDIENTE_SEG:
+        del _selecciones_pendientes[sel_id]
+        return None
+    return datos
+
+
+def eliminar_seleccion_pendiente(sel_id: str) -> None:
+    _selecciones_pendientes.pop(sel_id, None)
