@@ -1,5 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/consulta", "destination": "/consulta.html" }
-  ]
-}
