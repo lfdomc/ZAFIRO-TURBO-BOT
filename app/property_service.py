@@ -67,10 +67,10 @@ async def guardar_y_reindexar_property(prop: dict) -> None:
 
     req = prop.get("requisitosCheckIn") or {}
     if req.get("resumen") or req.get("detalle"):
-        texto = f"{nombre} — Requisitos de check-in: {req.get('resumen', '')} {req.get('detalle', '')}".strip()
+        texto = f"{nombre} — Requisitos de check-in (proceso interno del equipo): {req.get('resumen', '')} {req.get('detalle', '')}".strip()
         if req.get("link"):
             texto += f" Formulario: {req['link']}"
-        await _chunk(texto, "check_in", pid)
+        await _chunk(texto, "proceso_interno", pid)
 
     for par in prop.get("quickInfo", []):
         texto = _texto_par(par)
@@ -79,7 +79,7 @@ async def guardar_y_reindexar_property(prop: dict) -> None:
 
     correo_tpl = prop.get("correoTemplate")
     if correo_tpl and correo_tpl.get("body"):
-        await _chunk(f"{nombre} — Plantilla de correo a recepción: {correo_tpl['body']}", "check_in", pid)
+        await _chunk(f"{nombre} — Plantilla de correo a recepción (uso interno del equipo): {correo_tpl['body']}", "proceso_interno", pid)
 
     guia = prop.get("guiaDigital") or {}
     if guia.get("comoLlegar"):
