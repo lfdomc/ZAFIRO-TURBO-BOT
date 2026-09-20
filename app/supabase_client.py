@@ -548,7 +548,9 @@ async def guardar_mensaje_historial(
         "tipo_consulta": tipo_consulta, "sentimiento": sentimiento,
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
-        await client.post(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        resp = await client.post(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 201, 204):
+            logger.error(f"Error guardando turno de historial: HTTP {resp.status_code}: {resp.text}")
 
 
 # ------------------------------------------------------------
