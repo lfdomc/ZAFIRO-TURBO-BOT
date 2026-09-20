@@ -33,6 +33,10 @@ async def _al_arrancar():
         await supabase_client.borrar_historial_antiguo(settings.RETENCION_HISTORIAL_DIAS)
     except Exception as e:
         logger.error(f"Fallo limpiando historial antiguo al arrancar: {e}")
+    try:
+        await supabase_client.borrar_historial_archivo_antiguo(settings.RETENCION_ARCHIVO_DIAS)
+    except Exception as e:
+        logger.error(f"Fallo limpiando historial_archivo antiguo al arrancar: {e}")
 
 MATCH_COUNT = 10
 VERSION_BACKEND = "2026-09-18-fase1-admin"
@@ -208,12 +212,20 @@ SYSTEM_PROMPT_ADMIN = (
     "2. El cuerpo del mensaje, hablándole DIRECTO al huésped en segunda persona "
     "(vos/tú/usted) — nunca en tercera persona ('el huésped', 'que ha tenido'). "
     "Si la pregunta tiene varias partes (ej. 'cuál es el wifi y cómo llego'), "
-    "respondé cada parte, no te saltes ninguna. Si te piden algo que ya existe "
-    "como plantilla en el contexto (ej. 'el mensaje de bienvenida'), usá ese "
-    "contenido tal cual como cuerpo — no le agregues el nombre de la propiedad "
-    "si la plantilla no lo trae, y no dupliques saludo ni firma si ya trae los "
-    "suyos propios.\n"
-    "3. Una línea corta ofreciendo ayuda con cualquier otra cosa que necesite.\n"
+    "respondé cada parte, no te saltes ninguna — incluso si para una de las "
+    "partes no encontrás el dato en el contexto, reconocela igual con una "
+    "frase corta (ver regla 3 sobre cómo responder cuando falta un dato) en "
+    "vez de responder solo la otra parte y omitir esa por completo. Si te "
+    "piden algo que ya existe como plantilla en el contexto (ej. 'el mensaje "
+    "de bienvenida'), usá ese contenido tal cual como cuerpo — no le agregues "
+    "el nombre de la propiedad si la plantilla no lo trae, y no dupliques "
+    "saludo ni firma si ya trae los suyos propios.\n"
+    "3. Una línea corta ofreciendo ayuda con cualquier otra cosa que necesite — "
+    "EXCEPTO si el mensaje es una despedida o un aviso de que ya se fueron/salieron "
+    "de la propiedad (ej. 'ya salimos', 'gracias por todo', 'nos vamos'). En ese "
+    "caso no tiene sentido preguntar si necesitan algo más: en su lugar, deseales "
+    "un buen regreso en su viaje, y pedile de forma sutil (una frase corta, sin "
+    "insistir) que se tome un momento para calificar la atención/dejar una reseña.\n"
     "4. Firma siempre con 'Atentamente,\\nSofía' (o 'Best regards,\\nSofía' si "
     "el mensaje es en inglés).\n\n"
     "Reglas:\n"
@@ -294,6 +306,19 @@ SYSTEM_PROMPT_ADMIN = (
 
 def _normalizar_para_cache(texto: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[¿?¡!.,;:\"'()\[\]{}]", "", texto.lower())).strip()
+
+
+PATRONES_DESPEDIDA = (
+    "ya salimos", "ya nos fuimos", "ya nos vamos", "nos vamos ya", "acabamos de salir",
+    "ya hicimos check out", "ya hicimos checkout", "checkout listo", "check out listo",
+    "dejamos la propiedad", "dejamos la casa", "gracias por todo", "muchas gracias por todo",
+    "already left", "just left", "checked out", "we're leaving", "we are leaving", "thank you for everything",
+)
+
+
+def _parece_despedida(texto: str) -> bool:
+    texto_norm = _normalizar_para_cache(texto)
+    return any(p in texto_norm for p in PATRONES_DESPEDIDA)
 
 
 def _construir_contexto(fragmentos: list[dict]) -> str:
@@ -465,11 +490,22 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     await telegram_client.enviar_mensaje(chat_id, respuesta)
 
+    clasificacion = await gemini_client.clasificar_consulta(texto_usuario)
+    tipo_consulta = clasificacion["tipo"]
+    sentimiento = clasificacion["sentimiento"]
+
     try:
-        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado)
+        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado, tipo_consulta, sentimiento)
         await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta, property_id_mencionada, unit_id_mencionado)
+        if property_id_mencionada and _parece_despedida(texto_usuario):
+            # El huésped avisó que ya se fue — se borra el historial de ESA
+            # casa/unidad puntual (no de otras) para que la conversación del
+            # próximo huésped ahí no arrastre reclamos o situaciones de quien
+            # ya se fue. (La despedida se detecta solo por palabras clave —
+            # no es una categoría de negocio, no ensucia los indicadores.)
+            await supabase_client.archivar_y_borrar_historial_de_unidad(telegram_id, property_id_mencionada, unit_id_mencionado)
     except Exception as e:
-        logger.warning(f"No se pudo guardar el turno en el historial (no afecta la respuesta ya enviada): {e}")
+        logger.warning(f"No se pudo guardar/limpiar el historial (no afecta la respuesta ya enviada): {e}")
 
     # unit_id de la unidad puntual detectada — SOLO de una coincidencia
     # confiable (alias/nombre/num exacto, o la única unidad de una
@@ -505,8 +541,7 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     # --- Detección de reportes de mantenimiento/limpieza ---
     try:
-        tipo_incidencia = await gemini_client.clasificar_incidencia(texto_usuario)
-        if tipo_incidencia in ("mantenimiento", "limpieza"):
+        if tipo_consulta in ("mantenimiento", "limpieza"):
             if property_id_mencionada:
                 # El reporte debe dejar clarísimo TANTO la propiedad como la
                 # casa/unidad puntual (ej. "Urban Escalante — Gourmet Terrace
@@ -540,9 +575,9 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
                         f"podés, decime el número/nombre exacto de la casa para el próximo reporte."
                     )
 
-                numero_destino = await supabase_client.obtener_numero_whatsapp(property_id_mencionada, tipo_incidencia)
+                numero_destino = await supabase_client.obtener_numero_whatsapp(property_id_mencionada, tipo_consulta)
                 await reportes.crear_y_programar_reporte(
-                    chat_id, tipo_incidencia, property_id_mencionada, nombre_reporte,
+                    chat_id, tipo_consulta, property_id_mencionada, nombre_reporte,
                     texto_usuario, numero_destino,
                 )
             else:
@@ -553,8 +588,8 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
                 # En su lugar, se ofrecen botones con las más parecidas.
                 await _pedir_propiedad_con_botones(
                     chat_id, "epr",
-                    f"🔧 Parece un reporte de {tipo_incidencia}, pero no reconocí con certeza de qué propiedad se trata.",
-                    texto_usuario, {"tipo_incidencia": tipo_incidencia, "detalle": texto_usuario, "telegram_id": telegram_id},
+                    f"🔧 Parece un reporte de {tipo_consulta}, pero no reconocí con certeza de qué propiedad se trata.",
+                    texto_usuario, {"tipo_incidencia": tipo_consulta, "detalle": texto_usuario, "telegram_id": telegram_id},
                 )
     except Exception as e:
         logger.error(f"Fallo en la detección/creación de reporte: {e}")

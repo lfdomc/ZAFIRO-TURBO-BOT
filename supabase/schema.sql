@@ -144,10 +144,34 @@ create table if not exists historial_conversacion (
   contenido text not null,
   property_id text,               -- de qué propiedad se detectó que hablaba este turno (null = ninguna en particular)
   unit_id text,                   -- de qué unidad puntual (null = propiedad entera o ninguna) — evita mezclar Praia 41 con Praia 37, por ejemplo
+  tipo_consulta text,             -- informativa | mantenimiento | limpieza | queja | solicitud_excepcion | emergencia | otro (solo en filas role='user')
+  sentimiento text,                -- positivo | neutral | negativo (solo en filas role='user')
   creado_en timestamptz not null default now()
 );
 
 create index if not exists idx_historial_telegram on historial_conversacion(telegram_id, property_id, unit_id, creado_en desc);
+
+-- Historial "histórico" — se conserva más tiempo que el "caliente" (4 meses
+-- por defecto, contra 4 días del caliente) antes de borrarse también. Antes
+-- de limpiar el historial "caliente" (al despedirse un huésped, o por
+-- antigüedad), esas filas se copian acá primero. Sirve para análisis
+-- (indicadores mensuales: % de consultas informativas, quejas, sentimiento,
+-- etc. por propiedad) y el informe mensual automático — no para el contexto
+-- en vivo del bot, que usa solo historial_conversacion.
+create table if not exists historial_archivo (
+  id bigint generated always as identity primary key,
+  telegram_id text not null,
+  role text not null,
+  contenido text not null,
+  property_id text,
+  unit_id text,
+  tipo_consulta text,
+  sentimiento text,
+  creado_en timestamptz not null,       -- fecha original del mensaje, no la de archivado
+  archivado_en timestamptz not null default now()
+);
+
+create index if not exists idx_historial_archivo_propiedad on historial_archivo(property_id, unit_id, creado_en desc);
 
 -- ------------------------------------------------------------
 -- Log de errores del sistema (mismo patrón que ya usabas en JARVIS)

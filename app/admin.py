@@ -1,10 +1,11 @@
 import asyncio
 import logging
 import httpx
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Header, HTTPException
 
 from app.config import settings
-from app import supabase_client, property_service, state, fuente_externa, completitud
+from app import supabase_client, property_service, state, fuente_externa, completitud, email_client
 
 logger = logging.getLogger("admin")
 router = APIRouter()
@@ -166,6 +167,107 @@ async def importar_propiedades(datos: dict, x_admin_key: str | None = Header(def
     return {"ok": True, "mensaje": "Importación iniciada en segundo plano."}
 
 
+@router.get("/admin/informe-mensual")
+async def informe_mensual(anio: int, mes: int, x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    if not (1 <= mes <= 12):
+        raise HTTPException(status_code=400, detail="mes debe estar entre 1 y 12")
+    return await supabase_client.generar_informe_mensual(anio, mes)
+
+
+NOMBRES_MES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
+
+
+def _formatear_informe_html(informe: dict) -> str:
+    total = informe["total_consultas"]
+    nombre_mes = NOMBRES_MES[informe["mes"] - 1]
+
+    def _filas(d: dict) -> str:
+        if not d:
+            return "<tr><td>—</td><td>—</td></tr>"
+        filas_ordenadas = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
+        return "".join(
+            f"<tr><td>{k}</td><td>{v}</td><td>{round(v / total * 100) if total else 0}%</td></tr>"
+            for k, v in filas_ordenadas
+        )
+
+    def _filas_propiedad() -> str:
+        filas = ""
+        for prop, tipos in informe["por_propiedad"].items():
+            resumen = ", ".join(f"{t}: {n}" for t, n in sorted(tipos.items(), key=lambda kv: kv[1], reverse=True))
+            filas += f"<tr><td>{prop}</td><td>{resumen}</td></tr>"
+        return filas or "<tr><td colspan='2'>—</td></tr>"
+
+    estilo_tabla = "border-collapse:collapse;width:100%;margin-bottom:24px;"
+    estilo_celda = "border:1px solid #e2e8f0;padding:8px 12px;text-align:left;font-size:14px;"
+    estilo_header = estilo_celda + "background:#f8fafc;font-weight:600;"
+
+    return f"""
+    <div style="font-family:sans-serif;color:#1e293b;max-width:640px;">
+      <h2 style="color:#1e3a8a;">Informe mensual — {nombre_mes} {informe['anio']}</h2>
+      <p><strong>{total}</strong> consultas registradas en total.</p>
+
+      <h3>Por tipo de consulta</h3>
+      <table style="{estilo_tabla}">
+        <tr><th style="{estilo_header}">Tipo</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
+        {_filas(informe['por_tipo'])}
+      </table>
+
+      <h3>Por sentimiento</h3>
+      <table style="{estilo_tabla}">
+        <tr><th style="{estilo_header}">Sentimiento</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
+        {_filas(informe['por_sentimiento'])}
+      </table>
+
+      <h3>Por propiedad</h3>
+      <table style="{estilo_tabla}">
+        <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Desglose</th></tr>
+        {_filas_propiedad()}
+      </table>
+
+      <p style="color:#94a3b8;font-size:12px;">Generado automáticamente por Zafiro Turbo.</p>
+    </div>
+    """
+
+
+@router.post("/admin/informe-mensual/enviar")
+async def enviar_informe_mensual(
+    anio: int | None = None, mes: int | None = None, x_admin_key: str | None = Header(default=None)
+):
+    _verificar_admin_key(x_admin_key)
+
+    if anio is None or mes is None:
+        # Sin especificar, se manda el MES ANTERIOR (el que ya cerró) —
+        # tiene sentido como default para un envío mensual de cierre.
+        hoy = datetime.now(timezone.utc)
+        primer_dia_mes_actual = hoy.replace(day=1)
+        mes_pasado = primer_dia_mes_actual - timedelta(days=1)
+        anio, mes = mes_pasado.year, mes_pasado.month
+
+    destinatarios_raw = await supabase_client.obtener_config("informe_mensual_destinatarios")
+    destinatarios = [d.strip() for d in (destinatarios_raw or "").split(",") if d.strip()]
+    if not destinatarios:
+        raise HTTPException(
+            status_code=400,
+            detail="No hay destinatarios configurados — agregalos en Admin → Configuración general.",
+        )
+
+    informe = await supabase_client.generar_informe_mensual(anio, mes)
+    html = _formatear_informe_html(informe)
+    asunto = f"Informe mensual Zafiro — {NOMBRES_MES[mes - 1].capitalize()} {anio}"
+
+    ok = await email_client.enviar_email(destinatarios, asunto, html)
+    if not ok:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo enviar el correo — revisá RESEND_API_KEY en Railway.",
+        )
+    return {"ok": True, "enviado_a": destinatarios, "anio": anio, "mes": mes}
+
+
 @router.get("/admin/importar/estado")
 async def estado_importacion(x_admin_key: str | None = Header(default=None)):
     _verificar_admin_key(x_admin_key)
@@ -179,7 +281,7 @@ async def estado_importacion(x_admin_key: str | None = Header(default=None)):
 # Railway como respaldo si todavía no se configuró nada acá.
 # ------------------------------------------------------------
 
-CLAVES_CONFIG_EDITABLE = ["whatsapp_mantenimiento_default", "whatsapp_limpieza_default"]
+CLAVES_CONFIG_EDITABLE = ["whatsapp_mantenimiento_default", "whatsapp_limpieza_default", "informe_mensual_destinatarios"]
 
 
 @router.get("/admin/configuracion")

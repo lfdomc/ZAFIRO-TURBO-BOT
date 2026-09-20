@@ -5,6 +5,7 @@ reales (límite gratis de 1,000 embeddings/día por cuenta; rotar entre
 varias cuentas multiplica la cuota efectiva).
 """
 import httpx
+import json
 import logging
 from tenacity import retry, stop_after_attempt, wait_chain, wait_fixed, retry_if_exception_type
 from app.config import settings
@@ -137,31 +138,60 @@ async def generar_respuesta(payload_contents: list[dict], system_instruction: st
     raise RuntimeError(f"Todos los modelos y todas las claves fallaron. Último error: {ultimo_error}")
 
 
-async def clasificar_incidencia(texto: str) -> str:
-    """Devuelve 'mantenimiento', 'limpieza' o 'ninguno'. Se usa para
-    decidir si hay que ofrecer el botón de reporte por WhatsApp."""
+TIPOS_CONSULTA = (
+    "informativa", "mantenimiento", "limpieza", "queja", "solicitud_excepcion", "emergencia", "otro",
+)
+SENTIMIENTOS = ("positivo", "neutral", "negativo")
+
+
+async def clasificar_consulta(texto: str) -> dict:
+    """Devuelve {'tipo': ..., 'sentimiento': ...} en una sola llamada —
+    las dos dimensiones que de verdad mueven la aguja en análisis de
+    atención al cliente (categoría + sentimiento), según cómo lo hacen
+    plataformas reales del rubro (Freshdesk, SentiSum, etc.). Se usa
+    tanto para decidir si hay que ofrecer el botón de reporte
+    (mantenimiento/limpieza) como para guardarlo en el historial y
+    sacar indicadores mensuales."""
     system = (
         "Clasificás mensajes de un chat interno de administración de propiedades "
-        "de alquiler vacacional. Respondé con EXACTAMENTE una palabra, sin "
-        "explicación ni puntuación: 'mantenimiento' si el mensaje reporta un "
-        "problema físico o técnico a reparar (aire acondicionado, fuga de agua, "
-        "electrodoméstico roto, cerradura, plomería, electricidad, etc.), "
-        "'limpieza' si reporta un problema de limpieza o aseo (suciedad, ropa de "
-        "cama, basura, olores, etc.), o 'ninguno' si el mensaje es una pregunta "
-        "informativa, un saludo, o no reporta ningún problema."
+        "de alquiler vacacional. Respondé ÚNICAMENTE con un JSON, sin texto extra "
+        "ni bloques de código, con esta forma exacta: "
+        '{"tipo": "...", "sentimiento": "..."}\n\n'
+        "Valores posibles para 'tipo' (elegí el que mejor describa el mensaje):\n"
+        "- 'mantenimiento': reporta un problema físico o técnico a reparar (aire "
+        "acondicionado, fuga de agua, electrodoméstico roto, cerradura, plomería, "
+        "electricidad, etc.)\n"
+        "- 'limpieza': reporta un problema de limpieza o aseo (suciedad, ropa de "
+        "cama, basura, olores, etc.)\n"
+        "- 'queja': insatisfacción o malestar general que NO es un problema físico "
+        "a reparar ni de limpieza (ruido, vecinos, expectativas no cumplidas, mal "
+        "trato, la propiedad no es como se anunciaba, etc.)\n"
+        "- 'solicitud_excepcion': pide algo que depende de una aprobación humana "
+        "(early check-in, late check-out, descuento, reembolso, traer una mascota "
+        "no permitida, un huésped extra, una fiesta, etc.)\n"
+        "- 'emergencia': describe una situación de seguridad real (fuego, humo, "
+        "olor a gas, alguien lastimado o en peligro)\n"
+        "- 'informativa': pregunta un dato (wifi, horarios, cómo llegar, reglas, "
+        "código de acceso, etc.) sin reportar ningún problema\n"
+        "- 'otro': no encaja claramente en ninguna de las anteriores (incluye "
+        "saludos, despedidas, agradecimientos)\n\n"
+        "Valores posibles para 'sentimiento': 'positivo' (contento, agradecido), "
+        "'neutral' (una consulta normal, sin carga emocional evidente), o "
+        "'negativo' (molesto, frustrado, decepcionado)."
     )
     try:
         respuesta = await generar_respuesta(
             [{"role": "user", "parts": [{"text": texto}]}],
             system_instruction=system, temperatura=0.0,
         )
+        limpio = respuesta.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        datos = json.loads(limpio)
+        tipo = str(datos.get("tipo", "")).strip().lower()
+        sentimiento = str(datos.get("sentimiento", "")).strip().lower()
+        return {
+            "tipo": tipo if tipo in TIPOS_CONSULTA else "otro",
+            "sentimiento": sentimiento if sentimiento in SENTIMIENTOS else "neutral",
+        }
     except Exception as e:
-        logger.warning(f"No se pudo clasificar la incidencia (se asume 'ninguno'): {e}")
-        return "ninguno"
-
-    r = respuesta.strip().lower()
-    if "mantenimiento" in r:
-        return "mantenimiento"
-    if "limpieza" in r:
-        return "limpieza"
-    return "ninguno"
+        logger.warning(f"No se pudo clasificar la consulta (se asume 'otro'/'neutral'): {e}")
+        return {"tipo": "otro", "sentimiento": "neutral"}

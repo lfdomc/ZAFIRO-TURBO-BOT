@@ -45,10 +45,19 @@ class Settings:
     # el reporte solo por WhatsApp si nadie tocó ninguno de los botones.
     AUTO_ENVIO_WHATSAPP_MINUTOS: int = int(os.environ.get("AUTO_ENVIO_WHATSAPP_MINUTOS", "10"))
 
-    # Días de retención del historial de conversación — lo que sea más
-    # viejo que esto se borra solo al arrancar el proceso, para que la
-    # tabla no crezca sin límite (default: ~4 meses).
-    RETENCION_HISTORIAL_DIAS: int = int(os.environ.get("RETENCION_HISTORIAL_DIAS", "120"))
+    # Días de retención del historial "caliente" (el que usa el bot para
+    # contexto en vivo) — se borra solo, copiándose antes al histórico
+    # permanente. Corto a propósito: casi ninguna estadía dura más de esto.
+    RETENCION_HISTORIAL_DIAS: int = int(os.environ.get("RETENCION_HISTORIAL_DIAS", "4"))
+
+    # Días de retención del histórico permanente (historial_archivo) — se
+    # conserva mucho más que el caliente, para poder sacar indicadores
+    # mensuales, pero también se purga eventualmente (default: ~4 meses).
+    RETENCION_ARCHIVO_DIAS: int = int(os.environ.get("RETENCION_ARCHIVO_DIAS", "120"))
+
+    # Resend (resend.com) — envío del informe mensual por correo.
+    RESEND_API_KEY: str = os.environ.get("RESEND_API_KEY", "")
+    RESEND_FROM: str = os.environ.get("RESEND_FROM", "Zafiro Property Management <onboarding@resend.dev>")
 
     # URL pública del sitio en Vercel (sin / al final) — se usa para
     # armar el link de consulta temporal que el bot le da al admin.
