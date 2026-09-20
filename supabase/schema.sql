@@ -231,7 +231,7 @@ as $$
     from knowledge_chunks kc
     where kc.fts @@ plainto_tsquery('spanish', query_text)
       and (p_audiencia is null or kc.audiencia in (p_audiencia, 'both'))
-      and (p_property_id is null or kc.property_id = p_property_id)
+      and (p_property_id is null or kc.property_id = p_property_id or kc.property_id is null)
     limit least(match_count * 4, 50)
   ),
   busqueda_vectorial as (
@@ -240,7 +240,7 @@ as $$
            1 - (kc.embedding <=> query_embedding) as similitud
     from knowledge_chunks kc
     where (p_audiencia is null or kc.audiencia in (p_audiencia, 'both'))
-      and (p_property_id is null or kc.property_id = p_property_id)
+      and (p_property_id is null or kc.property_id = p_property_id or kc.property_id is null)
     order by kc.embedding <=> query_embedding
     limit least(match_count * 4, 50)
   ),

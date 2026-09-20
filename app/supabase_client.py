@@ -298,6 +298,25 @@ async def obtener_numero_whatsapp(property_id: str | None, tipo: str) -> str | N
     return None
 
 
+async def contar_reportes_recientes(property_id: str, tipo: str, dias: int) -> int:
+    """Cuenta reportes del mismo tipo en la misma propiedad, en los
+    últimos `dias` — para detectar problemas recurrentes (ej. el mismo
+    aire acondicionado fallando varias veces en la semana)."""
+    if not property_id:
+        return 0
+    desde = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    url = (
+        f"{_base_url()}/rest/v1/reportes_incidencias"
+        f"?property_id=eq.{property_id}&tipo=eq.{tipo}&creado_en=gte.{desde}&select=id"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200:
+            return len(resp.json())
+        logger.error(f"Error contando reportes recientes: HTTP {resp.status_code}: {resp.text}")
+        return 0
+
+
 async def crear_reporte(
     telegram_chat_id: str, tipo: str, property_id: str | None, nombre_propiedad: str | None,
     detalle: str, numero_destino: str | None, minutos_espera: int,

@@ -490,6 +490,17 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     await telegram_client.enviar_mensaje(chat_id, respuesta)
 
+    # Calificación de confianza — SIEMPRE en un mensaje aparte, para no
+    # estorbar el copiar y pegar del mensaje de arriba. Se basa en qué
+    # tan seguros estamos de la propiedad/unidad y en si de verdad se
+    # encontró contexto para responder.
+    if not contexto or not property_id_mencionada:
+        await telegram_client.enviar_mensaje(chat_id, "🔴 Confianza: baja — revisá antes de enviar.")
+    elif not unit_id_mencionado:
+        await telegram_client.enviar_mensaje(chat_id, "🟡 Confianza: media — no se identificó la unidad exacta.")
+    else:
+        await telegram_client.enviar_mensaje(chat_id, "🟢 Confianza: alta.")
+
     clasificacion = await gemini_client.clasificar_consulta(texto_usuario)
     tipo_consulta = clasificacion["tipo"]
     sentimiento = clasificacion["sentimiento"]

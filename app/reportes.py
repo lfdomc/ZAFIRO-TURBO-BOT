@@ -60,6 +60,20 @@ async def crear_y_programar_reporte(
         await telegram_client.enviar_mensaje(chat_id, "⚠️ Detecté un posible reporte pero no lo pude registrar (error de base de datos).")
         return
 
+    # Seguimiento de recurrencia — mensaje aparte, PARA EL ADMINISTRADOR
+    # (no para el huésped), avisando si esto se viene repitiendo en la
+    # misma propiedad. Se cuenta esta vez incluida.
+    if property_id:
+        DIAS_VENTANA = 7
+        cantidad = await supabase_client.contar_reportes_recientes(property_id, tipo, DIAS_VENTANA)
+        if cantidad >= 2:
+            await telegram_client.enviar_mensaje(
+                chat_id,
+                f"📋 Seguimiento (interno): este es el {cantidad}° reporte de *{tipo}* en "
+                f"{nombre_propiedad or 'esta propiedad'} en los últimos {DIAS_VENTANA} días — "
+                f"vale la pena revisar si es un problema recurrente."
+            )
+
     if not numero_destino:
         await telegram_client.enviar_mensaje(
             chat_id,
