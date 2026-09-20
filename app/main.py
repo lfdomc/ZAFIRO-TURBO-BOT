@@ -50,11 +50,15 @@ def _normalizar(texto: str) -> str:
 
 async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, str | None]:
     """Devuelve (property_id, unit_id). Revisa primero coincidencias de
-    UNIDAD puntual — por su nombre, su `num`, o un alias cargado
-    a mano (ej. 'Palma Real'/'LPR 241' para Del Roble, '1422' para
-    Qbo) — porque son identificadores más específicos y confiables que
-    el nombre de la propiedad entera. Si no hay una unidad clara, cae
-    al nombre de la propiedad (como antes)."""
+    UNIDAD puntual — por su nombre, su `num`, un alias cargado a mano
+    (ej. 'Palma Real'/'LPR 241' para Del Roble, '1422' para Qbo), o el
+    título real del listing de Airbnb (a veces es el único nombre por
+    el que se conoce la propiedad) — porque son identificadores más
+    específicos y confiables que el nombre de la propiedad entera. Si
+    no hay una unidad clara, cae al nombre de la propiedad. Si la
+    propiedad identificada tiene una sola unidad, se asigna esa
+    automáticamente — no hace falta que el mensaje la nombre aparte,
+    no hay ninguna otra unidad con la que confundirla."""
     filas = await supabase_client.listar_propiedades_con_datos()
     texto_norm = _normalizar(texto_usuario)
 
@@ -62,7 +66,11 @@ async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, s
     for f in filas:
         datos = f.get("datos") or {}
         for u in datos.get("units", []) or []:
-            candidatos = [c for c in [u.get("name"), u.get("num"), *(u.get("alias") or [])] if c]
+            listing = u.get("listing") or {}
+            candidatos = [c for c in [
+                u.get("name"), u.get("num"), listing.get("title"), listing.get("airbnbTitle"),
+                *(u.get("alias") or []),
+            ] if c]
             for candidato in candidatos:
                 cnorm = _normalizar(str(candidato)).strip()
                 if len(cnorm) >= 3 and cnorm in texto_norm:
@@ -79,7 +87,11 @@ async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, s
             coincidencias_prop.add(f["id"])
 
     if len(coincidencias_prop) == 1:
-        return coincidencias_prop.pop(), None
+        property_id = coincidencias_prop.pop()
+        fila = next((f for f in filas if f["id"] == property_id), None)
+        unidades = (fila.get("datos") or {}).get("units", []) if fila else []
+        unit_id_automatico = unidades[0].get("id") if len(unidades) == 1 else None
+        return property_id, unit_id_automatico
 
     return None, None
 
@@ -100,7 +112,10 @@ async def _propiedades_mas_cercanas(texto_usuario: str, maximo: int = 2) -> list
         datos = f.get("datos") or {}
         candidatos = [datos.get("name", f["nombre"])]
         for u in datos.get("units", []) or []:
-            candidatos.extend([c for c in [u.get("name"), *(u.get("alias") or [])] if c])
+            listing = u.get("listing") or {}
+            candidatos.extend([c for c in [
+                u.get("name"), listing.get("title"), listing.get("airbnbTitle"), *(u.get("alias") or []),
+            ] if c])
 
         mejor = 0.0
         for candidato in candidatos:
