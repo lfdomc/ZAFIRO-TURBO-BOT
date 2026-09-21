@@ -219,6 +219,42 @@ def _formatear_informe_html(informe: dict) -> str:
             filas += f"<tr><td>{prop}</td><td>{resumen}</td></tr>"
         return filas or "<tr><td colspan='2'>—</td></tr>"
 
+    def _filas_conteo_propiedad(d: dict) -> str:
+        if not d:
+            return "<tr><td colspan='2'>Ninguna 🎉</td></tr>"
+        filas_ordenadas = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
+        return "".join(f"<tr><td>{prop}</td><td>{n}</td></tr>" for prop, n in filas_ordenadas)
+
+    def _lista_ejemplos(ejemplos: list) -> str:
+        if not ejemplos:
+            return "<p style='color:#94a3b8;font-size:13px;'>Ninguno este mes.</p>"
+        items = "".join(
+            f"<li style='margin-bottom:8px;'><strong>{e['propiedad']}</strong>: {e['mensaje']}</li>"
+            for e in ejemplos
+        )
+        return f"<ul style='font-size:13px;padding-left:18px;'>{items}</ul>"
+
+    def _celda_color(color: str, texto: str) -> str:
+        fondos = {"verde": "#dcfce7", "amarillo": "#fef9c3", "rojo": "#fee2e2"}
+        letras = {"verde": "#166534", "amarillo": "#854d0e", "rojo": "#991b1b"}
+        return (
+            f"<td style='{estilo_celda}background:{fondos.get(color, '#f8fafc')};"
+            f"color:{letras.get(color, '#1e293b')};font-weight:600;'>{texto}</td>"
+        )
+
+    def _filas_rendimiento_unidad() -> str:
+        filas_r = informe.get("rendimiento_por_unidad") or []
+        if not filas_r:
+            return "<tr><td colspan='3'>—</td></tr>"
+        partes = []
+        for r in filas_r:
+            fila = f"<tr><td style='{estilo_celda}'>{r['unidad']} ({r['total_consultas']} consultas)</td>"
+            fila += _celda_color(r["confianza_color"], f"{r['confianza_pct']}% confianza alta")
+            fila += _celda_color(r["sentimiento_color"], f"{r['sentimiento_pct']}% sin sentimiento negativo")
+            fila += "</tr>"
+            partes.append(fila)
+        return "".join(partes)
+
     estilo_tabla = "border-collapse:collapse;width:100%;margin-bottom:24px;"
     estilo_celda = "border:1px solid #e2e8f0;padding:8px 12px;text-align:left;font-size:14px;"
     estilo_header = estilo_celda + "background:#f8fafc;font-weight:600;"
@@ -254,6 +290,36 @@ def _formatear_informe_html(informe: dict) -> str:
         <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Desglose</th></tr>
         {_filas_propiedad()}
       </table>
+
+      <h3>Rendimiento del bot por unidad</h3>
+      <p style="color:#94a3b8;font-size:12px;">
+        El detalle más fino — por casa/apartamento puntual, no solo por condominio. Verde = va bien,
+        amarillo = revisar, rojo = necesita atención.
+      </p>
+      <table style="{estilo_tabla}">
+        <tr>
+          <th style="{estilo_header}">Unidad</th>
+          <th style="{estilo_header}">Confianza</th>
+          <th style="{estilo_header}">Sentimiento</th>
+        </tr>
+        {_filas_rendimiento_unidad()}
+      </table>
+
+      <h3>⚠️ Propiedades con más respuestas de baja confianza</h3>
+      <p style="color:#94a3b8;font-size:12px;">Señal directa de dónde completar más datos — cruzalo con los avisos de la lista de propiedades en Admin.</p>
+      <table style="{estilo_tabla}">
+        <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Respuestas de baja confianza</th></tr>
+        {_filas_conteo_propiedad(informe['confianza_baja_por_propiedad'])}
+      </table>
+
+      <h3>😟 Propiedades con más sentimiento negativo</h3>
+      <table style="{estilo_tabla}">
+        <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Consultas con sentimiento negativo</th></tr>
+        {_filas_conteo_propiedad(informe['sentimiento_negativo_por_propiedad'])}
+      </table>
+
+      <h3>Ejemplos de baja confianza este mes</h3>
+      {_lista_ejemplos(informe['ejemplos_baja_confianza'])}
 
       <p style="color:#94a3b8;font-size:12px;">Generado automáticamente por Zafiro Turbo.</p>
     </div>

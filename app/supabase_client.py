@@ -162,13 +162,50 @@ async def listar_propiedades_resumen() -> list[dict]:
         return []
 
 
+async def _mapa_etiquetas_unidad() -> dict:
+    """Arma {(property_id, unit_id): 'Nombre legible'} — combina
+    propiedad + unidad (ej. 'Urban Escalante — 1411 (Vistas de
+    Volcanes)') solo cuando la propiedad tiene varias unidades; si
+    tiene una sola, el nombre de la propiedad ya alcanza."""
+    filas = await listar_propiedades_con_datos()
+    mapa = {}
+    for f in filas:
+        pid = f["id"]
+        datos = f.get("datos") or {}
+        nombre_prop = datos.get("name", f["nombre"])
+        unidades = datos.get("units", []) or []
+        mapa[(pid, None)] = nombre_prop
+        for u in unidades:
+            uid = u.get("id")
+            nombre_u = u.get("name") or uid
+            mapa[(pid, uid)] = f"{nombre_prop} — {nombre_u}" if len(unidades) > 1 else nombre_prop
+    return mapa
+
+
+def _color_confianza(pct_alta: float) -> str:
+    if pct_alta >= 70:
+        return "verde"
+    if pct_alta >= 40:
+        return "amarillo"
+    return "rojo"
+
+
+def _color_sentimiento(pct_no_negativo: float) -> str:
+    if pct_no_negativo >= 80:
+        return "verde"
+    if pct_no_negativo >= 60:
+        return "amarillo"
+    return "rojo"
+
+
 async def generar_informe_mensual(anio: int, mes: int) -> dict:
     """Lee historial_archivo del mes pedido (solo filas role='user', que
     son las que llevan tipo_consulta/sentimiento/confianza) y arma los
     indicadores agregados: cuántas consultas de cada tipo, de cada
     sentimiento, de cada nivel de confianza del bot, desglosado por
-    propiedad, más el FCR (First Contact Resolution) de reportes de
-    mantenimiento/limpieza — la base del informe mensual."""
+    propiedad Y por unidad puntual (ej. 'Urban 1411' en vez de solo
+    'Urban Escalante'), más el FCR (First Contact Resolution) de
+    reportes de mantenimiento/limpieza — la base del informe mensual."""
     desde = f"{anio:04d}-{mes:02d}-01T00:00:00Z"
     if mes == 12:
         hasta = f"{anio + 1:04d}-01-01T00:00:00Z"
@@ -178,7 +215,7 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
     url = (
         f"{_base_url()}/rest/v1/historial_archivo"
         f"?creado_en=gte.{desde}&creado_en=lt.{hasta}&role=eq.user"
-        f"&select=property_id,tipo_consulta,sentimiento,confianza"
+        f"&select=property_id,unit_id,tipo_consulta,sentimiento,confianza,contenido"
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url, headers=_headers())
@@ -187,17 +224,24 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
             return {
                 "anio": anio, "mes": mes, "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {},
                 "por_confianza": {}, "por_propiedad": {}, "fcr": None,
+                "confianza_baja_por_propiedad": {}, "sentimiento_negativo_por_propiedad": {},
+                "ejemplos_baja_confianza": [], "rendimiento_por_unidad": [],
             }
         filas = resp.json()
 
     propiedades = {p["id"]: p["nombre"] for p in await listar_propiedades_resumen()}
+    etiquetas_unidad = await _mapa_etiquetas_unidad()
 
     por_tipo, por_sentimiento, por_confianza, por_propiedad = {}, {}, {}, {}
+    confianza_baja_por_propiedad, sentimiento_negativo_por_propiedad = {}, {}
+    ejemplos_baja_confianza = []
+    unidades_datos: dict[tuple, dict] = {}
     for f in filas:
         t = f.get("tipo_consulta") or "sin_clasificar"
         s = f.get("sentimiento") or "sin_clasificar"
         c = f.get("confianza") or "sin_clasificar"
         pid = f.get("property_id")
+        uid = f.get("unit_id")
         nombre_prop = propiedades.get(pid, pid) or "Sin propiedad identificada"
 
         por_tipo[t] = por_tipo.get(t, 0) + 1
@@ -206,12 +250,44 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
         por_propiedad.setdefault(nombre_prop, {})
         por_propiedad[nombre_prop][t] = por_propiedad[nombre_prop].get(t, 0) + 1
 
+        if c == "baja":
+            confianza_baja_por_propiedad[nombre_prop] = confianza_baja_por_propiedad.get(nombre_prop, 0) + 1
+            if len(ejemplos_baja_confianza) < 10:
+                ejemplos_baja_confianza.append({"propiedad": nombre_prop, "mensaje": (f.get("contenido") or "")[:200]})
+        if s == "negativo":
+            sentimiento_negativo_por_propiedad[nombre_prop] = sentimiento_negativo_por_propiedad.get(nombre_prop, 0) + 1
+
+        clave_unidad = (pid, uid)
+        registro = unidades_datos.setdefault(clave_unidad, {"total": 0, "confianza": {}, "sentimiento": {}})
+        registro["total"] += 1
+        registro["confianza"][c] = registro["confianza"].get(c, 0) + 1
+        registro["sentimiento"][s] = registro["sentimiento"].get(s, 0) + 1
+
+    rendimiento_por_unidad = []
+    for (pid, uid), datos_u in unidades_datos.items():
+        total_u = datos_u["total"]
+        alta = datos_u["confianza"].get("alta", 0)
+        negativo = datos_u["sentimiento"].get("negativo", 0)
+        pct_confianza = round(alta / total_u * 100) if total_u else 0
+        pct_sentimiento = round((total_u - negativo) / total_u * 100) if total_u else 0
+        etiqueta = etiquetas_unidad.get((pid, uid)) or propiedades.get(pid, pid) or "Sin propiedad identificada"
+        rendimiento_por_unidad.append({
+            "unidad": etiqueta, "total_consultas": total_u,
+            "confianza_pct": pct_confianza, "confianza_color": _color_confianza(pct_confianza),
+            "sentimiento_pct": pct_sentimiento, "sentimiento_color": _color_sentimiento(pct_sentimiento),
+        })
+    rendimiento_por_unidad.sort(key=lambda r: r["total_consultas"], reverse=True)
+
     fcr = await _calcular_fcr_mes(anio, mes)
 
     return {
         "anio": anio, "mes": mes, "total_consultas": len(filas),
         "por_tipo": por_tipo, "por_sentimiento": por_sentimiento, "por_confianza": por_confianza,
         "por_propiedad": por_propiedad, "fcr": fcr,
+        "confianza_baja_por_propiedad": confianza_baja_por_propiedad,
+        "sentimiento_negativo_por_propiedad": sentimiento_negativo_por_propiedad,
+        "ejemplos_baja_confianza": ejemplos_baja_confianza,
+        "rendimiento_por_unidad": rendimiento_por_unidad,
     }
 
 
