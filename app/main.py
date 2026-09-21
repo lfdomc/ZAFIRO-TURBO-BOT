@@ -37,6 +37,14 @@ async def _al_arrancar():
         await supabase_client.borrar_historial_archivo_antiguo(settings.RETENCION_ARCHIVO_DIAS)
     except Exception as e:
         logger.error(f"Fallo limpiando historial_archivo antiguo al arrancar: {e}")
+    try:
+        await supabase_client.borrar_reportes_antiguos(settings.RETENCION_ARCHIVO_DIAS)
+    except Exception as e:
+        logger.error(f"Fallo limpiando reportes_incidencias antiguos al arrancar: {e}")
+    try:
+        await supabase_client.borrar_accesos_temporales_antiguos(settings.RETENCION_ARCHIVO_DIAS)
+    except Exception as e:
+        logger.error(f"Fallo limpiando accesos_temporales antiguos al arrancar: {e}")
 
 MATCH_COUNT = 10
 VERSION_BACKEND = "2026-09-18-fase1-admin"
@@ -493,12 +501,17 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     # Calificación de confianza — SIEMPRE en un mensaje aparte, para no
     # estorbar el copiar y pegar del mensaje de arriba. Se basa en qué
     # tan seguros estamos de la propiedad/unidad y en si de verdad se
-    # encontró contexto para responder.
+    # encontró contexto para responder. Se guarda también en el
+    # historial, para poder medir en el informe mensual qué tan seguido
+    # el bot está respondiendo con certeza.
     if not contexto or not property_id_mencionada:
+        nivel_confianza = "baja"
         await telegram_client.enviar_mensaje(chat_id, "🔴 Confianza: baja — revisá antes de enviar.")
     elif not unit_id_mencionado:
+        nivel_confianza = "media"
         await telegram_client.enviar_mensaje(chat_id, "🟡 Confianza: media — no se identificó la unidad exacta.")
     else:
+        nivel_confianza = "alta"
         await telegram_client.enviar_mensaje(chat_id, "🟢 Confianza: alta.")
 
     clasificacion = await gemini_client.clasificar_consulta(texto_usuario)
@@ -506,7 +519,7 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     sentimiento = clasificacion["sentimiento"]
 
     try:
-        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado, tipo_consulta, sentimiento)
+        await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado, tipo_consulta, sentimiento, nivel_confianza)
         await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta, property_id_mencionada, unit_id_mencionado)
         if property_id_mencionada and _parece_despedida(texto_usuario):
             # El huésped avisó que ya se fue — se borra el historial de ESA
@@ -514,7 +527,7 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
             # próximo huésped ahí no arrastre reclamos o situaciones de quien
             # ya se fue. (La despedida se detecta solo por palabras clave —
             # no es una categoría de negocio, no ensucia los indicadores.)
-            await supabase_client.archivar_y_borrar_historial_de_unidad(telegram_id, property_id_mencionada, unit_id_mencionado)
+            await supabase_client.borrar_historial_de_unidad(telegram_id, property_id_mencionada, unit_id_mencionado)
     except Exception as e:
         logger.warning(f"No se pudo guardar/limpiar el historial (no afecta la respuesta ya enviada): {e}")
 

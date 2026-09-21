@@ -3,6 +3,7 @@ import logging
 import httpx
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import Response
 
 from app.config import settings
 from app import supabase_client, property_service, state, fuente_externa, completitud, email_client
@@ -181,6 +182,23 @@ NOMBRES_MES = [
 ]
 
 
+def _seccion_fcr(fcr: dict | None) -> str:
+    if not fcr or fcr.get("fcr_pct") is None:
+        return "<p style='color:#94a3b8;font-size:13px;'>Sin reportes de mantenimiento/limpieza este mes.</p>"
+    return f"""
+    <p style="font-size:14px;">
+      <strong>{fcr['fcr_pct']}%</strong> de los reportes ({fcr['resueltos_primera_vez']} de {fcr['total_reportes']})
+      no necesitaron un reporte de seguimiento del mismo tipo en la misma propiedad dentro de los 7 días
+      siguientes.
+    </p>
+    <p style="color:#94a3b8;font-size:12px;">
+      Nota: es una aproximación (estándar internacional "First Contact Resolution") basada en si el mismo
+      problema se repitió — todavía no hay un botón para marcar un reporte como resuelto, así que no es una
+      medición exacta.
+    </p>
+    """
+
+
 def _formatear_informe_html(informe: dict) -> str:
     total = informe["total_consultas"]
     nombre_mes = NOMBRES_MES[informe["mes"] - 1]
@@ -222,6 +240,15 @@ def _formatear_informe_html(informe: dict) -> str:
         {_filas(informe['por_sentimiento'])}
       </table>
 
+      <h3>Confianza de las respuestas del bot</h3>
+      <table style="{estilo_tabla}">
+        <tr><th style="{estilo_header}">Confianza</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
+        {_filas(informe['por_confianza'])}
+      </table>
+
+      <h3>First Contact Resolution (FCR)</h3>
+      {_seccion_fcr(informe.get('fcr'))}
+
       <h3>Por propiedad</h3>
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Desglose</th></tr>
@@ -231,6 +258,31 @@ def _formatear_informe_html(informe: dict) -> str:
       <p style="color:#94a3b8;font-size:12px;">Generado automáticamente por Zafiro Turbo.</p>
     </div>
     """
+
+
+@router.get("/admin/informe-mensual/pdf")
+async def informe_mensual_pdf(anio: int, mes: int, x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    if not (1 <= mes <= 12):
+        raise HTTPException(status_code=400, detail="mes debe estar entre 1 y 12")
+
+    from io import BytesIO
+    from xhtml2pdf import pisa
+
+    informe = await supabase_client.generar_informe_mensual(anio, mes)
+    html = _formatear_informe_html(informe)
+
+    buffer = BytesIO()
+    resultado = pisa.CreatePDF(html, dest=buffer)
+    if resultado.err:
+        raise HTTPException(status_code=500, detail="No se pudo generar el PDF del informe.")
+
+    nombre_archivo = f"informe_{anio}-{mes:02d}.pdf"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{nombre_archivo}"'},
+    )
 
 
 @router.post("/admin/informe-mensual/enviar")

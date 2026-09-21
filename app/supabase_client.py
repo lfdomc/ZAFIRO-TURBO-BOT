@@ -164,9 +164,11 @@ async def listar_propiedades_resumen() -> list[dict]:
 
 async def generar_informe_mensual(anio: int, mes: int) -> dict:
     """Lee historial_archivo del mes pedido (solo filas role='user', que
-    son las que llevan tipo_consulta/sentimiento) y arma los indicadores
-    agregados: cuántas consultas de cada tipo, de cada sentimiento, y
-    desglosado por propiedad — la base del informe mensual."""
+    son las que llevan tipo_consulta/sentimiento/confianza) y arma los
+    indicadores agregados: cuántas consultas de cada tipo, de cada
+    sentimiento, de cada nivel de confianza del bot, desglosado por
+    propiedad, más el FCR (First Contact Resolution) de reportes de
+    mantenimiento/limpieza — la base del informe mensual."""
     desde = f"{anio:04d}-{mes:02d}-01T00:00:00Z"
     if mes == 12:
         hasta = f"{anio + 1:04d}-01-01T00:00:00Z"
@@ -176,32 +178,91 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
     url = (
         f"{_base_url()}/rest/v1/historial_archivo"
         f"?creado_en=gte.{desde}&creado_en=lt.{hasta}&role=eq.user"
-        f"&select=property_id,tipo_consulta,sentimiento"
+        f"&select=property_id,tipo_consulta,sentimiento,confianza"
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url, headers=_headers())
         if resp.status_code != 200:
             logger.error(f"Error generando informe mensual: HTTP {resp.status_code}: {resp.text}")
-            return {"anio": anio, "mes": mes, "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {}, "por_propiedad": {}}
+            return {
+                "anio": anio, "mes": mes, "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {},
+                "por_confianza": {}, "por_propiedad": {}, "fcr": None,
+            }
         filas = resp.json()
 
     propiedades = {p["id"]: p["nombre"] for p in await listar_propiedades_resumen()}
 
-    por_tipo, por_sentimiento, por_propiedad = {}, {}, {}
+    por_tipo, por_sentimiento, por_confianza, por_propiedad = {}, {}, {}, {}
     for f in filas:
         t = f.get("tipo_consulta") or "sin_clasificar"
         s = f.get("sentimiento") or "sin_clasificar"
+        c = f.get("confianza") or "sin_clasificar"
         pid = f.get("property_id")
         nombre_prop = propiedades.get(pid, pid) or "Sin propiedad identificada"
 
         por_tipo[t] = por_tipo.get(t, 0) + 1
         por_sentimiento[s] = por_sentimiento.get(s, 0) + 1
+        por_confianza[c] = por_confianza.get(c, 0) + 1
         por_propiedad.setdefault(nombre_prop, {})
         por_propiedad[nombre_prop][t] = por_propiedad[nombre_prop].get(t, 0) + 1
 
+    fcr = await _calcular_fcr_mes(anio, mes)
+
     return {
         "anio": anio, "mes": mes, "total_consultas": len(filas),
-        "por_tipo": por_tipo, "por_sentimiento": por_sentimiento, "por_propiedad": por_propiedad,
+        "por_tipo": por_tipo, "por_sentimiento": por_sentimiento, "por_confianza": por_confianza,
+        "por_propiedad": por_propiedad, "fcr": fcr,
+    }
+
+
+async def _calcular_fcr_mes(anio: int, mes: int) -> dict | None:
+    """Aproxima el First Contact Resolution (un estándar internacional
+    de atención al cliente): de los reportes de mantenimiento/limpieza
+    del mes, qué % NO tuvo un reporte de seguimiento del mismo tipo en
+    la misma propiedad dentro de los 7 días siguientes — una proxy de
+    'se resolvió a la primera', ya que hoy no hay un botón de marcar
+    un reporte como resuelto."""
+    desde_dt = datetime.fromisoformat(f"{anio:04d}-{mes:02d}-01T00:00:00+00:00")
+    hasta_dt = datetime(anio + 1, 1, 1, tzinfo=timezone.utc) if mes == 12 else datetime(anio, mes + 1, 1, tzinfo=timezone.utc)
+    # Margen de 7 días después del mes, para detectar seguimientos que
+    # caen justo después del cierre de mes.
+    hasta_con_margen = hasta_dt + timedelta(days=7)
+
+    url = (
+        f"{_base_url()}/rest/v1/reportes_incidencias"
+        f"?creado_en=gte.{desde_dt.isoformat()}&creado_en=lt.{hasta_con_margen.isoformat()}"
+        f"&select=property_id,tipo,creado_en&order=creado_en.asc"
+    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code != 200:
+            logger.error(f"Error calculando FCR: HTTP {resp.status_code}: {resp.text}")
+            return None
+        filas = resp.json()
+
+    grupos: dict[tuple, list] = {}
+    for f in filas:
+        clave = (f.get("property_id"), f.get("tipo"))
+        grupos.setdefault(clave, []).append(datetime.fromisoformat(f["creado_en"].replace("Z", "+00:00")))
+
+    total_del_mes = 0
+    resueltos_primera_vez = 0
+    for fechas in grupos.values():
+        fechas.sort()
+        for fecha in fechas:
+            if not (desde_dt <= fecha < hasta_dt):
+                continue
+            total_del_mes += 1
+            tiene_seguimiento = any(timedelta(0) < (f2 - fecha) <= timedelta(days=7) for f2 in fechas)
+            if not tiene_seguimiento:
+                resueltos_primera_vez += 1
+
+    if total_del_mes == 0:
+        return {"total_reportes": 0, "resueltos_primera_vez": 0, "fcr_pct": None}
+    return {
+        "total_reportes": total_del_mes,
+        "resueltos_primera_vez": resueltos_primera_vez,
+        "fcr_pct": round(resueltos_primera_vez / total_del_mes * 100),
     }
 
 
@@ -416,83 +477,25 @@ async def guardar_guia_externa(property_id: str, guia_data: dict) -> bool:
     )
 
 
-async def _archivar_filas(filas: list[dict]) -> bool:
-    """Copia filas de historial_conversacion a historial_archivo (el
-    histórico permanente) antes de que se borren de la tabla
-    'caliente'. Devuelve False si el archivado falló — en ese caso
-    quien llama NO debe borrar el original, para no perder nada."""
-    if not filas:
-        return True
-    payload = [
-        {
-            "telegram_id": f["telegram_id"], "role": f["role"], "contenido": f["contenido"],
-            "property_id": f.get("property_id"), "unit_id": f.get("unit_id"), "creado_en": f["creado_en"],
-        }
-        for f in filas
-    ]
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{_base_url()}/rest/v1/historial_archivo", json=payload,
-            headers={**_headers(), "Prefer": "return=minimal"},
-        )
-        if resp.status_code not in (200, 201, 204):
-            logger.error(f"Error archivando historial (no se borró el original): HTTP {resp.status_code}: {resp.text}")
-            return False
-        return True
-
-
-async def _archivar_filas(filas: list[dict]) -> bool:
-    """Copia filas de historial_conversacion a historial_archivo (el
-    histórico permanente) antes de que se borren de la tabla
-    'caliente'. Devuelve False si el archivado falló — en ese caso
-    quien llama NO debe borrar el original, para no perder nada."""
-    if not filas:
-        return True
-    payload = [
-        {
-            "telegram_id": f["telegram_id"], "role": f["role"], "contenido": f["contenido"],
-            "property_id": f.get("property_id"), "unit_id": f.get("unit_id"),
-            "tipo_consulta": f.get("tipo_consulta"), "sentimiento": f.get("sentimiento"),
-            "creado_en": f["creado_en"],
-        }
-        for f in filas
-    ]
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            f"{_base_url()}/rest/v1/historial_archivo", json=payload,
-            headers={**_headers(), "Prefer": "return=minimal"},
-        )
-        if resp.status_code not in (200, 201, 204):
-            logger.error(f"Error archivando historial (no se borró el original): HTTP {resp.status_code}: {resp.text}")
-            return False
-        return True
 
 
 async def borrar_historial_antiguo(dias: int) -> None:
-    """Turnos de historial 'caliente' más viejos que `dias` se copian
-    primero al histórico permanente (historial_archivo) y recién
-    después se borran de acá — se llama al arrancar el proceso (ver
-    main.py), así la tabla no crece sin límite pero nada se pierde de
-    verdad. Es un no-op barato si no hay nada tan viejo todavía."""
+    """Borra del historial 'caliente' lo más viejo que `dias` — ya no
+    hace falta archivar antes, porque cada turno ya se guardó en
+    historial_archivo al momento de crearse (ver
+    guardar_mensaje_historial). Se llama al arrancar el proceso."""
     limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
     url = f"{_base_url()}/rest/v1/historial_conversacion?creado_en=lt.{limite}"
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(url, headers=_headers())
-        if resp.status_code != 200:
-            logger.error(f"Error leyendo historial antiguo para archivar: HTTP {resp.status_code}: {resp.text}")
-            return
-        filas = resp.json()
-        if not await _archivar_filas(filas):
-            return
-        resp2 = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
-        if resp2.status_code not in (200, 204):
-            logger.error(f"Error limpiando historial antiguo: HTTP {resp2.status_code}: {resp2.text}")
+        resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error limpiando historial antiguo: HTTP {resp.status_code}: {resp.text}")
 
 
 async def borrar_historial_archivo_antiguo(dias: int) -> None:
     """El histórico permanente también se purga eventualmente (default
-    ~4 meses) — a diferencia del caliente, esto es un borrado final,
-    sin copiar a ningún otro lado. Se llama al arrancar el proceso."""
+    ~4 meses) — borrado final, sin copiar a ningún otro lado. Se llama
+    al arrancar el proceso."""
     limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
     url = f"{_base_url()}/rest/v1/historial_archivo?creado_en=lt.{limite}"
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -501,34 +504,52 @@ async def borrar_historial_archivo_antiguo(dias: int) -> None:
             logger.error(f"Error limpiando historial_archivo antiguo: HTTP {resp.status_code}: {resp.text}")
 
 
+async def borrar_reportes_antiguos(dias: int) -> None:
+    """reportes_incidencias también se purga (default ~4 meses) — son
+    registros operativos de corto plazo, no hace falta conservarlos
+    para siempre (el conteo de recurrencia solo mira los últimos 7
+    días de todos modos). Se llama al arrancar el proceso."""
+    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    url = f"{_base_url()}/rest/v1/reportes_incidencias?creado_en=lt.{limite}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error limpiando reportes_incidencias antiguos: HTTP {resp.status_code}: {resp.text}")
+
+
+async def borrar_accesos_temporales_antiguos(dias: int) -> None:
+    """accesos_temporales (links de 24h para huéspedes) también se
+    purga (default ~4 meses) — mucho después de que cualquier token
+    haya vencido, así que es solo limpieza de la tabla. Se llama al
+    arrancar el proceso."""
+    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    url = f"{_base_url()}/rest/v1/accesos_temporales?creado_en=lt.{limite}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error limpiando accesos_temporales antiguos: HTTP {resp.status_code}: {resp.text}")
+
+
 # ------------------------------------------------------------
 # Historial de conversación
 # ------------------------------------------------------------
 
-async def archivar_y_borrar_historial_de_unidad(telegram_id: str, property_id: str, unit_id: str | None) -> None:
-    """Se llama cuando un huésped se despide/avisa que ya salió: copia
-    TODO el historial 'caliente' de esa propiedad/unidad puntual al
-    histórico permanente (historial_archivo, para análisis y el
-    informe mensual) y recién después lo borra de la tabla 'caliente'
-    — así la conversación del próximo huésped en esa misma casa no
-    arrastra los reclamos o situaciones de quien ya se fue, pero nada
-    se pierde para siempre."""
+async def borrar_historial_de_unidad(telegram_id: str, property_id: str, unit_id: str | None) -> None:
+    """Se llama cuando un huésped se despide/avisa que ya salió: borra
+    el historial 'caliente' de esa propiedad/unidad puntual — no hace
+    falta archivar antes, porque cada turno ya quedó guardado en
+    historial_archivo al momento de crearse. Así la conversación del
+    próximo huésped en esa misma casa no arrastra reclamos o
+    situaciones de quien ya se fue, y nada se pierde para siempre."""
     filtro_unidad = f"unit_id.eq.{unit_id}" if unit_id else "unit_id.is.null"
     url = (
         f"{_base_url()}/rest/v1/historial_conversacion"
         f"?telegram_id=eq.{telegram_id}&property_id=eq.{property_id}&{filtro_unidad}"
     )
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, headers=_headers())
-        if resp.status_code != 200:
-            logger.error(f"Error leyendo historial de unidad para archivar: HTTP {resp.status_code}: {resp.text}")
-            return
-        filas = resp.json()
-        if not await _archivar_filas(filas):
-            return
-        resp2 = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
-        if resp2.status_code not in (200, 204):
-            logger.error(f"Error borrando historial de unidad tras despedida: HTTP {resp2.status_code}: {resp2.text}")
+        resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error borrando historial de unidad tras despedida: HTTP {resp.status_code}: {resp.text}")
 
 
 async def obtener_historial_conversacion(telegram_id: str, property_id: str | None, unit_id: str | None = None, limite: int = 6) -> list[dict]:
@@ -558,18 +579,33 @@ async def obtener_historial_conversacion(telegram_id: str, property_id: str | No
 async def guardar_mensaje_historial(
     telegram_id: str, rol: str, contenido: str,
     property_id: str | None = None, unit_id: str | None = None,
-    tipo_consulta: str | None = None, sentimiento: str | None = None,
+    tipo_consulta: str | None = None, sentimiento: str | None = None, confianza: str | None = None,
 ) -> None:
-    url = f"{_base_url()}/rest/v1/historial_conversacion"
-    payload = {
+    """Guarda el turno en LAS DOS tablas al mismo tiempo — el 'caliente'
+    (para el contexto en vivo del bot, se borra a los 4 días) y el
+    'histórico' (para análisis/informe mensual, se borra a los 4
+    meses). Así nunca depende de que algo se "evicte" del caliente
+    para quedar respaldado — queda archivado desde el primer momento."""
+    ahora = datetime.now(timezone.utc).isoformat()
+    payload_base = {
         "telegram_id": telegram_id, "role": rol, "contenido": contenido,
         "property_id": property_id, "unit_id": unit_id,
-        "tipo_consulta": tipo_consulta, "sentimiento": sentimiento,
+        "tipo_consulta": tipo_consulta, "sentimiento": sentimiento, "confianza": confianza,
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        resp = await client.post(
+            f"{_base_url()}/rest/v1/historial_conversacion", json=payload_base,
+            headers={**_headers(), "Prefer": "return=minimal"},
+        )
         if resp.status_code not in (200, 201, 204):
-            logger.error(f"Error guardando turno de historial: HTTP {resp.status_code}: {resp.text}")
+            logger.error(f"Error guardando turno de historial (caliente): HTTP {resp.status_code}: {resp.text}")
+
+        resp2 = await client.post(
+            f"{_base_url()}/rest/v1/historial_archivo", json={**payload_base, "creado_en": ahora},
+            headers={**_headers(), "Prefer": "return=minimal"},
+        )
+        if resp2.status_code not in (200, 201, 204):
+            logger.error(f"Error guardando turno de historial (histórico): HTTP {resp2.status_code}: {resp2.text}")
 
 
 # ------------------------------------------------------------
