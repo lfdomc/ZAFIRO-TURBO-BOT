@@ -182,19 +182,28 @@ NOMBRES_MES = [
 ]
 
 
-def _seccion_fcr(fcr: dict | None) -> str:
-    if not fcr or fcr.get("fcr_pct") is None:
-        return "<p style='color:#94a3b8;font-size:13px;'>Sin reportes de mantenimiento/limpieza este mes.</p>"
+def _seccion_indice_servicio(datos: dict | None, etiqueta_celda: str, estilo_celda: str, estilo_header: str, estilo_tabla: str) -> str:
+    if not datos or datos.get("pct") is None:
+        return "<p style='color:#94a3b8;font-size:13px;'>Sin reportes este mes.</p>"
+    filas_unidad = "".join(
+        f"<tr><td style='{estilo_celda}'>{u['unidad']}</td>"
+        f"<td style='{estilo_celda};background:{ {'verde': '#dcfce7', 'amarillo': '#fef9c3', 'rojo': '#fee2e2'}.get(u['color'], '#f8fafc') };"
+        f"color:{ {'verde': '#166534', 'amarillo': '#854d0e', 'rojo': '#991b1b'}.get(u['color'], '#1e293b') };font-weight:600;'>{u['pct']}% ({u['resueltos_primera_vez']} de {u['total_reportes']})</td></tr>"
+        for u in datos["por_unidad"]
+    )
     return f"""
     <p style="font-size:14px;">
-      <strong>{fcr['fcr_pct']}%</strong> de los reportes ({fcr['resueltos_primera_vez']} de {fcr['total_reportes']})
-      no necesitaron un reporte de seguimiento del mismo tipo en la misma propiedad dentro de los 7 días
+      <strong>{datos['pct']}%</strong> de los reportes ({datos['resueltos_primera_vez']} de {datos['total_reportes']})
+      no necesitaron un reporte de seguimiento del mismo tipo, en la misma unidad, dentro de los 7 días
       siguientes.
     </p>
+    <table style="{estilo_tabla}">
+      <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">{etiqueta_celda}</th></tr>
+      {filas_unidad or f"<tr><td style='{estilo_celda}' colspan='2'>—</td></tr>"}
+    </table>
     <p style="color:#94a3b8;font-size:12px;">
-      Nota: es una aproximación (estándar internacional "First Contact Resolution") basada en si el mismo
-      problema se repitió — todavía no hay un botón para marcar un reporte como resuelto, así que no es una
-      medición exacta.
+      Nota: es una aproximación (basada en el estándar internacional "First Contact Resolution") — todavía no
+      hay un botón para marcar un reporte como resuelto, así que no es una medición exacta.
     </p>
     """
 
@@ -203,13 +212,15 @@ def _formatear_informe_html(informe: dict) -> str:
     total = informe["total_consultas"]
     nombre_mes = NOMBRES_MES[informe["mes"] - 1]
 
-    # Resumen ejecutivo — los 4 números que más le importan al encargado,
+    # Resumen ejecutivo — los números que más le importan al encargado,
     # arriba de todo, antes de entrar al detalle.
     pct_confianza_alta = round(informe["por_confianza"].get("alta", 0) / total * 100) if total else 0
     pct_sentimiento_negativo = round(informe["por_sentimiento"].get("negativo", 0) / total * 100) if total else 0
-    fcr_dato = informe.get("fcr") or {}
-    fcr_pct_kpi = fcr_dato.get("fcr_pct")
-    fcr_texto_kpi = f"{fcr_pct_kpi}%" if fcr_pct_kpi is not None else "—"
+    indices_servicio = informe.get("indices_servicio") or {}
+    pct_limpieza = (indices_servicio.get("limpieza") or {}).get("pct")
+    pct_mantenimiento = (indices_servicio.get("mantenimiento") or {}).get("pct")
+    texto_limpieza = f"{pct_limpieza}%" if pct_limpieza is not None else "—"
+    texto_mantenimiento = f"{pct_mantenimiento}%" if pct_mantenimiento is not None else "—"
 
     def _filas(d: dict) -> str:
         if not d:
@@ -342,7 +353,11 @@ def _formatear_informe_html(informe: dict) -> str:
         </tr>
         <tr>
           {_tarjeta_kpi(f"{pct_sentimiento_negativo}%", "Sentimiento negativo", "#dc2626" if pct_sentimiento_negativo >= 20 else "#d97706" if pct_sentimiento_negativo >= 10 else "#16a34a")}
-          {_tarjeta_kpi(fcr_texto_kpi, "First Contact Resolution", "#1e3a8a")}
+          {_tarjeta_kpi(texto_limpieza, "Índice de limpieza", "#16a34a" if (pct_limpieza or 0) >= 70 else "#d97706" if (pct_limpieza or 0) >= 40 else "#dc2626")}
+        </tr>
+        <tr>
+          {_tarjeta_kpi(texto_mantenimiento, "Índice de mantenimiento", "#16a34a" if (pct_mantenimiento or 0) >= 70 else "#d97706" if (pct_mantenimiento or 0) >= 40 else "#dc2626")}
+          <td style="width:50%;"></td>
         </tr>
       </table>
 
@@ -374,8 +389,13 @@ def _formatear_informe_html(informe: dict) -> str:
       ''')}
 
       {_seccion(f'''
-      <h3>First Contact Resolution (FCR)</h3>
-      {_seccion_fcr(informe.get('fcr'))}
+      <h3>Índice de limpieza</h3>
+      {_seccion_indice_servicio(indices_servicio.get("limpieza"), "Índice", estilo_celda, estilo_header, estilo_tabla)}
+      ''')}
+
+      {_seccion(f'''
+      <h3>Índice de mantenimiento</h3>
+      {_seccion_indice_servicio(indices_servicio.get("mantenimiento"), "Índice", estilo_celda, estilo_header, estilo_tabla)}
       ''')}
 
       {_seccion(f'''

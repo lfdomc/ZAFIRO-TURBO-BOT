@@ -241,7 +241,10 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
             logger.error(f"Error generando informe mensual: HTTP {resp.status_code}: {resp.text}")
             return {
                 "anio": anio, "mes": mes, "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {},
-                "por_confianza": {}, "por_propiedad": {}, "por_unidad": {}, "fcr": None,
+                "por_confianza": {}, "por_propiedad": {}, "por_unidad": {}, "indices_servicio": {
+                    "limpieza": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
+                    "mantenimiento": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
+                },
                 "confianza_baja_por_propiedad": {}, "sentimiento_negativo_por_propiedad": {},
                 "confianza_baja_por_unidad": {}, "sentimiento_negativo_por_unidad": {},
                 "ejemplos_baja_confianza": [], "rendimiento_por_unidad": [],
@@ -304,12 +307,12 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
         })
     rendimiento_por_unidad.sort(key=lambda r: r["total_consultas"], reverse=True)
 
-    fcr = await _calcular_fcr_mes(anio, mes)
+    indices_servicio = await _calcular_indices_servicio(anio, mes, etiquetas_unidad)
 
     return {
         "anio": anio, "mes": mes, "total_consultas": len(filas),
         "por_tipo": por_tipo, "por_sentimiento": por_sentimiento, "por_confianza": por_confianza,
-        "por_propiedad": por_propiedad, "por_unidad": por_unidad, "fcr": fcr,
+        "por_propiedad": por_propiedad, "por_unidad": por_unidad, "indices_servicio": indices_servicio,
         "confianza_baja_por_propiedad": confianza_baja_por_propiedad,
         "sentimiento_negativo_por_propiedad": sentimiento_negativo_por_propiedad,
         "confianza_baja_por_unidad": confianza_baja_por_unidad,
@@ -319,11 +322,14 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
     }
 
 
-async def _calcular_fcr_mes(anio: int, mes: int) -> dict | None:
-    """Aproxima el First Contact Resolution (un estándar internacional
-    de atención al cliente): de los reportes de mantenimiento/limpieza
-    del mes, qué % NO tuvo un reporte de seguimiento del mismo tipo en
-    la misma propiedad dentro de los 7 días siguientes — una proxy de
+async def _calcular_indices_servicio(anio: int, mes: int, etiquetas_unidad: dict) -> dict:
+    """Como el viejo FCR, pero separado en dos índices — limpieza y
+    mantenimiento — y con desglose por unidad en cada uno. Un solo
+    número mezclando los dos tipos ocultaba cuál de los dos servicios
+    necesita atención en qué unidad puntual; esto se lo muestra
+    directo al cliente. Para cada tipo: de los reportes del mes, qué %
+    NO tuvo un reporte de seguimiento del MISMO tipo, en la MISMA
+    propiedad y unidad, dentro de los 7 días siguientes — una proxy de
     'se resolvió a la primera', ya que hoy no hay un botón de marcar
     un reporte como resuelto."""
     desde_dt = datetime.fromisoformat(f"{anio:04d}-{mes:02d}-01T00:00:00+00:00")
@@ -337,41 +343,57 @@ async def _calcular_fcr_mes(anio: int, mes: int) -> dict | None:
         f"?creado_en=gte.{_iso_url(desde_dt)}&creado_en=lt.{_iso_url(hasta_con_margen)}"
         f"&select=property_id,unit_id,tipo,creado_en&order=creado_en.asc"
     )
+    vacio = {"limpieza": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
+             "mantenimiento": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []}}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url, headers=_headers())
         if resp.status_code != 200:
-            logger.error(f"Error calculando FCR: HTTP {resp.status_code}: {resp.text}")
-            return None
+            logger.error(f"Error calculando índices de servicio: HTTP {resp.status_code}: {resp.text}")
+            return vacio
         filas = resp.json()
 
     # Se agrupa por propiedad + UNIDAD + tipo — no solo por propiedad. Sin la
     # unidad, dos problemas distintos en dos casas distintas del mismo
     # condominio (ej. Urban Escalante) se contarían como "el mismo problema
-    # repitiéndose", bajando el FCR de forma artificial.
+    # repitiéndose", bajando el índice de forma artificial.
     grupos: dict[tuple, list] = {}
     for f in filas:
         clave = (f.get("property_id"), f.get("unit_id"), f.get("tipo"))
         grupos.setdefault(clave, []).append(datetime.fromisoformat(f["creado_en"].replace("Z", "+00:00")))
 
-    total_del_mes = 0
-    resueltos_primera_vez = 0
-    for fechas in grupos.values():
+    acumulado_unidad: dict[str, dict[str, dict]] = {"limpieza": {}, "mantenimiento": {}}
+    for (pid, uid, tipo), fechas in grupos.items():
+        if tipo not in vacio:
+            continue  # ignora tipos que no sean limpieza/mantenimiento, si los hubiera
+        etiqueta = etiquetas_unidad.get((pid, uid)) or pid or "Sin propiedad identificada"
         fechas.sort()
         for fecha in fechas:
             if not (desde_dt <= fecha < hasta_dt):
                 continue
-            total_del_mes += 1
+            vacio[tipo]["total_reportes"] += 1
             tiene_seguimiento = any(timedelta(0) < (f2 - fecha) <= timedelta(days=7) for f2 in fechas)
-            if not tiene_seguimiento:
-                resueltos_primera_vez += 1
+            resuelto = not tiene_seguimiento
+            if resuelto:
+                vacio[tipo]["resueltos_primera_vez"] += 1
+            reg = acumulado_unidad[tipo].setdefault(etiqueta, {"total": 0, "resueltos": 0})
+            reg["total"] += 1
+            if resuelto:
+                reg["resueltos"] += 1
 
-    if total_del_mes == 0:
-        return {"total_reportes": 0, "resueltos_primera_vez": 0, "fcr_pct": None}
-    return {
-        "total_reportes": total_del_mes,
-        "resueltos_primera_vez": resueltos_primera_vez,
-        "fcr_pct": round(resueltos_primera_vez / total_del_mes * 100),
-    }
+    for tipo in ("limpieza", "mantenimiento"):
+        total = vacio[tipo]["total_reportes"]
+        vacio[tipo]["pct"] = round(vacio[tipo]["resueltos_primera_vez"] / total * 100) if total else None
+        lista = []
+        for etiqueta, reg in acumulado_unidad[tipo].items():
+            pct_u = round(reg["resueltos"] / reg["total"] * 100) if reg["total"] else 0
+            lista.append({
+                "unidad": etiqueta, "total_reportes": reg["total"], "resueltos_primera_vez": reg["resueltos"],
+                "pct": pct_u, "color": _color_confianza(pct_u),
+            })
+        lista.sort(key=lambda r: r["total_reportes"], reverse=True)
+        vacio[tipo]["por_unidad"] = lista
+
+    return vacio
 
 
 async def obtener_property(property_id: str) -> dict | None:
