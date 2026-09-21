@@ -213,10 +213,11 @@ def _formatear_informe_html(informe: dict) -> str:
 
     def _filas(d: dict) -> str:
         if not d:
-            return "<tr><td>—</td><td>—</td></tr>"
+            return f"<tr><td style='{estilo_celda}' colspan='3'>—</td></tr>"
         filas_ordenadas = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
         return "".join(
-            f"<tr><td>{k}</td><td>{v}</td><td>{round(v / total * 100) if total else 0}%</td></tr>"
+            f"<tr><td style='{estilo_celda}'>{k}</td><td style='{estilo_celda}'>{v}</td>"
+            f"<td style='{estilo_celda}'>{round(v / total * 100) if total else 0}%</td></tr>"
             for k, v in filas_ordenadas
         )
 
@@ -224,14 +225,17 @@ def _formatear_informe_html(informe: dict) -> str:
         filas = ""
         for prop, tipos in informe["por_propiedad"].items():
             resumen = ", ".join(f"{t}: {n}" for t, n in sorted(tipos.items(), key=lambda kv: kv[1], reverse=True))
-            filas += f"<tr><td>{prop}</td><td>{resumen}</td></tr>"
-        return filas or "<tr><td colspan='2'>—</td></tr>"
+            filas += f"<tr><td style='{estilo_celda}'>{prop}</td><td style='{estilo_celda}'>{resumen}</td></tr>"
+        return filas or f"<tr><td style='{estilo_celda}' colspan='2'>—</td></tr>"
 
     def _filas_conteo_propiedad(d: dict) -> str:
         if not d:
-            return "<tr><td colspan='2'>Ninguna 🎉</td></tr>"
+            return f"<tr><td style='{estilo_celda}' colspan='2'>Ninguna 🎉</td></tr>"
         filas_ordenadas = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
-        return "".join(f"<tr><td>{prop}</td><td>{n}</td></tr>" for prop, n in filas_ordenadas)
+        return "".join(
+            f"<tr><td style='{estilo_celda}'>{prop}</td><td style='{estilo_celda}'>{n}</td></tr>"
+            for prop, n in filas_ordenadas
+        )
 
     def _lista_ejemplos(ejemplos: list) -> str:
         if not ejemplos:
