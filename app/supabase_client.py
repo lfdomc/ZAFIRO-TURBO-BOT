@@ -13,6 +13,15 @@ from app.config import settings
 logger = logging.getLogger("supabase_client")
 
 
+def _iso_url(dt) -> str:
+    """ISO 8601 con sufijo 'Z' en vez de '+00:00' — para usar en query
+    strings de URL. El '+' se corrompe ahí (PostgREST/el server lo
+    interpreta como espacio), 'Z' es equivalente para UTC y no tiene
+    ese problema. Nunca usar para el cuerpo JSON de un POST/PATCH —
+    ahí el '+' normal no tiene ningún problema."""
+    return dt.isoformat().replace("+00:00", "Z")
+
+
 def _headers() -> dict:
     return {
         "apikey": settings.SUPABASE_KEY,
@@ -306,7 +315,7 @@ async def _calcular_fcr_mes(anio: int, mes: int) -> dict | None:
 
     url = (
         f"{_base_url()}/rest/v1/reportes_incidencias"
-        f"?creado_en=gte.{desde_dt.isoformat()}&creado_en=lt.{hasta_con_margen.isoformat()}"
+        f"?creado_en=gte.{_iso_url(desde_dt)}&creado_en=lt.{_iso_url(hasta_con_margen)}"
         f"&select=property_id,tipo,creado_en&order=creado_en.asc"
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -441,7 +450,7 @@ async def contar_reportes_recientes(property_id: str, tipo: str, dias: int) -> i
     aire acondicionado fallando varias veces en la semana)."""
     if not property_id:
         return 0
-    desde = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    desde = _iso_url(datetime.now(timezone.utc) - timedelta(days=dias))
     url = (
         f"{_base_url()}/rest/v1/reportes_incidencias"
         f"?property_id=eq.{property_id}&tipo=eq.{tipo}&creado_en=gte.{desde}&select=id"
@@ -560,7 +569,7 @@ async def borrar_historial_antiguo(dias: int) -> None:
     hace falta archivar antes, porque cada turno ya se guardó en
     historial_archivo al momento de crearse (ver
     guardar_mensaje_historial). Se llama al arrancar el proceso."""
-    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    limite = _iso_url(datetime.now(timezone.utc) - timedelta(days=dias))
     url = f"{_base_url()}/rest/v1/historial_conversacion?creado_en=lt.{limite}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
@@ -572,7 +581,7 @@ async def borrar_historial_archivo_antiguo(dias: int) -> None:
     """El histórico permanente también se purga eventualmente (default
     ~4 meses) — borrado final, sin copiar a ningún otro lado. Se llama
     al arrancar el proceso."""
-    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    limite = _iso_url(datetime.now(timezone.utc) - timedelta(days=dias))
     url = f"{_base_url()}/rest/v1/historial_archivo?creado_en=lt.{limite}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
@@ -585,7 +594,7 @@ async def borrar_reportes_antiguos(dias: int) -> None:
     registros operativos de corto plazo, no hace falta conservarlos
     para siempre (el conteo de recurrencia solo mira los últimos 7
     días de todos modos). Se llama al arrancar el proceso."""
-    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    limite = _iso_url(datetime.now(timezone.utc) - timedelta(days=dias))
     url = f"{_base_url()}/rest/v1/reportes_incidencias?creado_en=lt.{limite}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
@@ -598,7 +607,7 @@ async def borrar_accesos_temporales_antiguos(dias: int) -> None:
     purga (default ~4 meses) — mucho después de que cualquier token
     haya vencido, así que es solo limpieza de la tabla. Se llama al
     arrancar el proceso."""
-    limite = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+    limite = _iso_url(datetime.now(timezone.utc) - timedelta(days=dias))
     url = f"{_base_url()}/rest/v1/accesos_temporales?creado_en=lt.{limite}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
