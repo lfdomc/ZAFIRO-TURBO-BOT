@@ -282,7 +282,7 @@ def _formatear_informe_html(informe: dict) -> str:
     def _img(b64: str) -> str:
         if not b64:
             return ""
-        return f'<img src="data:image/png;base64,{b64}" width="480" style="display:block;margin:8px 0 20px 0;" />'
+        return f'<img src="data:image/png;base64,{b64}" width="380" style="display:block;margin:8px 0 16px 0;" />'
 
     img_tipo = _img(graficos_informe.grafico_circular(informe["por_tipo"], "Consultas por tipo"))
     img_sentimiento = _img(graficos_informe.grafico_circular(informe["por_sentimiento"], "Consultas por sentimiento"))
@@ -297,14 +297,21 @@ def _formatear_informe_html(informe: dict) -> str:
         "% sin sentimiento negativo, por unidad", "% sin sentimiento negativo",
     ))
 
+    def _seccion(html_interno: str) -> str:
+        return f'<div style="page-break-inside:avoid;">{html_interno}</div>'
+
     return f"""
-    <style>@page {{ size: letter; margin: 1.5cm; }}</style>
+    <style>
+      @page {{ size: letter; margin: 1.5cm; }}
+      table {{ page-break-inside: avoid; }}
+      h3 {{ page-break-after: avoid; }}
+    </style>
     <div style="font-family:sans-serif;color:#1e293b;max-width:520px;">
 
       <div style="background:{estilo_marca_bg};padding:22px 24px;border-radius:8px;margin-bottom:24px;">
-        <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">ZAFIRO PROPERTY MANAGEMENT</span><br/>
+        <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</span><br/>
         <span style="color:white;font-size:22px;font-weight:700;line-height:2;">Informe mensual de atención al huésped</span><br/>
-        <span style="color:#dbeafe;font-size:13px;">{nombre_mes.capitalize()} {informe['anio']}</span>
+        <span style="color:#dbeafe;font-size:13px;">{nombre_mes.capitalize()} {informe['anio']} · Cliente: Zafiro Property Management</span>
       </div>
 
       <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:10px;">Resumen ejecutivo</p>
@@ -319,36 +326,46 @@ def _formatear_informe_html(informe: dict) -> str:
         </tr>
       </table>
 
+      {_seccion(f'''
       <h3>Por tipo de consulta</h3>
       {img_tipo}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Tipo</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_tipo'])}
       </table>
+      ''')}
 
+      {_seccion(f'''
       <h3>Por sentimiento</h3>
       {img_sentimiento}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Sentimiento</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_sentimiento'])}
       </table>
+      ''')}
 
+      {_seccion(f'''
       <h3>Confianza de las respuestas del bot</h3>
       {img_confianza}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Confianza</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_confianza'])}
       </table>
+      ''')}
 
+      {_seccion(f'''
       <h3>First Contact Resolution (FCR)</h3>
       {_seccion_fcr(informe.get('fcr'))}
+      ''')}
 
+      {_seccion(f'''
       <h3>Por propiedad</h3>
       {img_volumen}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Desglose</th></tr>
         {_filas_propiedad()}
       </table>
+      ''')}
 
       <h3>Rendimiento del bot por unidad</h3>
       <p style="color:#94a3b8;font-size:12px;">
@@ -366,25 +383,31 @@ def _formatear_informe_html(informe: dict) -> str:
         {_filas_rendimiento_unidad()}
       </table>
 
+      {_seccion(f'''
       <h3>⚠️ Propiedades con más respuestas de baja confianza</h3>
       <p style="color:#94a3b8;font-size:12px;">Señal directa de dónde completar más datos — cruzalo con los avisos de la lista de propiedades en Admin.</p>
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Respuestas de baja confianza</th></tr>
         {_filas_conteo_propiedad(informe['confianza_baja_por_propiedad'])}
       </table>
+      ''')}
 
+      {_seccion(f'''
       <h3>😟 Propiedades con más sentimiento negativo</h3>
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Consultas con sentimiento negativo</th></tr>
         {_filas_conteo_propiedad(informe['sentimiento_negativo_por_propiedad'])}
       </table>
+      ''')}
 
+      {_seccion(f'''
       <h3>Ejemplos de baja confianza este mes</h3>
       {_lista_ejemplos(informe['ejemplos_baja_confianza'])}
+      ''')}
 
       <div style="border-top:1px solid #e2e8f0;margin-top:16px;padding-top:12px;">
         <p style="color:#94a3b8;font-size:11px;margin:0;">
-          Generado automáticamente por Zafiro Turbo el {datetime.now(timezone.utc).strftime('%d/%m/%Y')}. Documento
+          Generado automáticamente por S.O.F.I.A. el {datetime.now(timezone.utc).strftime('%d/%m/%Y')}. Documento
           confidencial — uso interno de Zafiro Property Management.
         </p>
       </div>
