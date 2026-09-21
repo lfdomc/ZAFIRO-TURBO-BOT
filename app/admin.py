@@ -221,20 +221,34 @@ def _formatear_informe_html(informe: dict) -> str:
             for k, v in filas_ordenadas
         )
 
-    def _filas_propiedad() -> str:
+    # Preferir los campos por unidad (más detallados); si viniera de una
+    # versión vieja del backend sin estos campos, usar los de propiedad.
+    por_unidad = informe.get("por_unidad") or informe.get("por_propiedad") or {}
+    confianza_baja_por_unidad = informe.get("confianza_baja_por_unidad") or informe.get("confianza_baja_por_propiedad") or {}
+    sentimiento_negativo_por_unidad = informe.get("sentimiento_negativo_por_unidad") or informe.get("sentimiento_negativo_por_propiedad") or {}
+
+    def _etiqueta_corta(etiqueta: str) -> str:
+        """Para el eje del gráfico de barras — la etiqueta completa es
+        'Propiedad — Número — Nombre de Airbnb'; para el gráfico alcanza
+        con 'Propiedad — Número', sin el nombre de Airbnb que puede ser
+        largo y amontonar el eje."""
+        partes = etiqueta.split(" — ")
+        return " — ".join(partes[:2]) if len(partes) > 2 else etiqueta
+
+    def _filas_unidad() -> str:
         filas = ""
-        for prop, tipos in informe["por_propiedad"].items():
+        for u, tipos in por_unidad.items():
             resumen = ", ".join(f"{t}: {n}" for t, n in sorted(tipos.items(), key=lambda kv: kv[1], reverse=True))
-            filas += f"<tr><td style='{estilo_celda}'>{prop}</td><td style='{estilo_celda}'>{resumen}</td></tr>"
+            filas += f"<tr><td style='{estilo_celda}'>{u}</td><td style='{estilo_celda}'>{resumen}</td></tr>"
         return filas or f"<tr><td style='{estilo_celda}' colspan='2'>—</td></tr>"
 
-    def _filas_conteo_propiedad(d: dict) -> str:
+    def _filas_conteo_unidad(d: dict) -> str:
         if not d:
             return f"<tr><td style='{estilo_celda}' colspan='2'>Ninguna 🎉</td></tr>"
         filas_ordenadas = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
         return "".join(
-            f"<tr><td style='{estilo_celda}'>{prop}</td><td style='{estilo_celda}'>{n}</td></tr>"
-            for prop, n in filas_ordenadas
+            f"<tr><td style='{estilo_celda}'>{u}</td><td style='{estilo_celda}'>{n}</td></tr>"
+            for u, n in filas_ordenadas
         )
 
     def _lista_ejemplos(ejemplos: list) -> str:
@@ -291,13 +305,15 @@ def _formatear_informe_html(informe: dict) -> str:
     img_tipo = _img(graficos_informe.grafico_circular(informe["por_tipo"], "Consultas por tipo"))
     img_sentimiento = _img(graficos_informe.grafico_circular(informe["por_sentimiento"], "Consultas por sentimiento"))
     img_confianza = _img(graficos_informe.grafico_circular(informe["por_confianza"], "Confianza de las respuestas"))
-    img_volumen = _img(graficos_informe.grafico_barras_volumen(informe["por_propiedad"], "Consultas por propiedad"))
+    por_unidad_corto = {_etiqueta_corta(u): tipos for u, tipos in por_unidad.items()}
+    img_volumen = _img(graficos_informe.grafico_barras_volumen(por_unidad_corto, "Consultas por unidad"))
+    rendimiento_corto = [{**r, "unidad": _etiqueta_corta(r["unidad"])} for r in (informe.get("rendimiento_por_unidad") or [])]
     img_confianza_unidad = _img(graficos_informe.grafico_barras_semaforo(
-        informe.get("rendimiento_por_unidad") or [], "confianza_pct", "confianza_color",
+        rendimiento_corto, "confianza_pct", "confianza_color",
         "% de respuestas de confianza alta, por unidad", "% confianza alta",
     ))
     img_sentimiento_unidad = _img(graficos_informe.grafico_barras_semaforo(
-        informe.get("rendimiento_por_unidad") or [], "sentimiento_pct", "sentimiento_color",
+        rendimiento_corto, "sentimiento_pct", "sentimiento_color",
         "% sin sentimiento negativo, por unidad", "% sin sentimiento negativo",
     ))
 
@@ -363,11 +379,11 @@ def _formatear_informe_html(informe: dict) -> str:
       ''')}
 
       {_seccion(f'''
-      <h3>Por propiedad</h3>
+      <h3>Por unidad</h3>
       {img_volumen}
       <table style="{estilo_tabla}">
-        <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Desglose</th></tr>
-        {_filas_propiedad()}
+        <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Desglose</th></tr>
+        {_filas_unidad()}
       </table>
       ''')}
 
@@ -388,19 +404,19 @@ def _formatear_informe_html(informe: dict) -> str:
       </table>
 
       {_seccion(f'''
-      <h3>⚠️ Propiedades con más respuestas de baja confianza</h3>
+      <h3>⚠️ Unidades con más respuestas de baja confianza</h3>
       <p style="color:#94a3b8;font-size:12px;">Señal directa de dónde completar más datos — cruzalo con los avisos de la lista de propiedades en Admin.</p>
       <table style="{estilo_tabla}">
-        <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Respuestas de baja confianza</th></tr>
-        {_filas_conteo_propiedad(informe['confianza_baja_por_propiedad'])}
+        <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Respuestas de baja confianza</th></tr>
+        {_filas_conteo_unidad(confianza_baja_por_unidad)}
       </table>
       ''')}
 
       {_seccion(f'''
-      <h3>😟 Propiedades con más sentimiento negativo</h3>
+      <h3>😟 Unidades con más sentimiento negativo</h3>
       <table style="{estilo_tabla}">
-        <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Consultas con sentimiento negativo</th></tr>
-        {_filas_conteo_propiedad(informe['sentimiento_negativo_por_propiedad'])}
+        <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Consultas con sentimiento negativo</th></tr>
+        {_filas_conteo_unidad(sentimiento_negativo_por_unidad)}
       </table>
       ''')}
 

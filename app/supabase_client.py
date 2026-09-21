@@ -173,9 +173,11 @@ async def listar_propiedades_resumen() -> list[dict]:
 
 async def _mapa_etiquetas_unidad() -> dict:
     """Arma {(property_id, unit_id): 'Nombre legible'} — combina
-    propiedad + unidad (ej. 'Urban Escalante — 1411 (Vistas de
-    Volcanes)') solo cuando la propiedad tiene varias unidades; si
-    tiene una sola, el nombre de la propiedad ya alcanza."""
+    propiedad, número de unidad y nombre de Airbnb, en ese orden, ej.
+    'Urban Escalante — 2307 — Experiencia con vistas a la montaña y la
+    ciudad'. Si la unidad no tiene título de Airbnb cargado todavía, se
+    usa su nombre interno en su lugar. Con una sola unidad, el nombre
+    de la propiedad ya alcanza."""
     filas = await listar_propiedades_con_datos()
     mapa = {}
     for f in filas:
@@ -186,8 +188,13 @@ async def _mapa_etiquetas_unidad() -> dict:
         mapa[(pid, None)] = nombre_prop
         for u in unidades:
             uid = u.get("id")
-            nombre_u = u.get("name") or uid
-            mapa[(pid, uid)] = f"{nombre_prop} — {nombre_u}" if len(unidades) > 1 else nombre_prop
+            if len(unidades) <= 1:
+                mapa[(pid, uid)] = nombre_prop
+                continue
+            numero = u.get("num") or uid
+            listing = u.get("listing") or {}
+            nombre_airbnb = listing.get("airbnbTitle") or listing.get("title") or u.get("name") or uid
+            mapa[(pid, uid)] = f"{nombre_prop} — {numero} — {nombre_airbnb}"
     return mapa
 
 
@@ -232,8 +239,9 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
             logger.error(f"Error generando informe mensual: HTTP {resp.status_code}: {resp.text}")
             return {
                 "anio": anio, "mes": mes, "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {},
-                "por_confianza": {}, "por_propiedad": {}, "fcr": None,
+                "por_confianza": {}, "por_propiedad": {}, "por_unidad": {}, "fcr": None,
                 "confianza_baja_por_propiedad": {}, "sentimiento_negativo_por_propiedad": {},
+                "confianza_baja_por_unidad": {}, "sentimiento_negativo_por_unidad": {},
                 "ejemplos_baja_confianza": [], "rendimiento_por_unidad": [],
             }
         filas = resp.json()
@@ -243,6 +251,7 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
 
     por_tipo, por_sentimiento, por_confianza, por_propiedad = {}, {}, {}, {}
     confianza_baja_por_propiedad, sentimiento_negativo_por_propiedad = {}, {}
+    confianza_baja_por_unidad, sentimiento_negativo_por_unidad, por_unidad = {}, {}, {}
     ejemplos_baja_confianza = []
     unidades_datos: dict[tuple, dict] = {}
     for f in filas:
@@ -252,19 +261,24 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
         pid = f.get("property_id")
         uid = f.get("unit_id")
         nombre_prop = propiedades.get(pid, pid) or "Sin propiedad identificada"
+        etiqueta_u = etiquetas_unidad.get((pid, uid)) or nombre_prop
 
         por_tipo[t] = por_tipo.get(t, 0) + 1
         por_sentimiento[s] = por_sentimiento.get(s, 0) + 1
         por_confianza[c] = por_confianza.get(c, 0) + 1
         por_propiedad.setdefault(nombre_prop, {})
         por_propiedad[nombre_prop][t] = por_propiedad[nombre_prop].get(t, 0) + 1
+        por_unidad.setdefault(etiqueta_u, {})
+        por_unidad[etiqueta_u][t] = por_unidad[etiqueta_u].get(t, 0) + 1
 
         if c == "baja":
             confianza_baja_por_propiedad[nombre_prop] = confianza_baja_por_propiedad.get(nombre_prop, 0) + 1
+            confianza_baja_por_unidad[etiqueta_u] = confianza_baja_por_unidad.get(etiqueta_u, 0) + 1
             if len(ejemplos_baja_confianza) < 10:
-                ejemplos_baja_confianza.append({"propiedad": nombre_prop, "mensaje": (f.get("contenido") or "")[:200]})
+                ejemplos_baja_confianza.append({"propiedad": etiqueta_u, "mensaje": (f.get("contenido") or "")[:200]})
         if s == "negativo":
             sentimiento_negativo_por_propiedad[nombre_prop] = sentimiento_negativo_por_propiedad.get(nombre_prop, 0) + 1
+            sentimiento_negativo_por_unidad[etiqueta_u] = sentimiento_negativo_por_unidad.get(etiqueta_u, 0) + 1
 
         clave_unidad = (pid, uid)
         registro = unidades_datos.setdefault(clave_unidad, {"total": 0, "confianza": {}, "sentimiento": {}})
@@ -292,9 +306,11 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
     return {
         "anio": anio, "mes": mes, "total_consultas": len(filas),
         "por_tipo": por_tipo, "por_sentimiento": por_sentimiento, "por_confianza": por_confianza,
-        "por_propiedad": por_propiedad, "fcr": fcr,
+        "por_propiedad": por_propiedad, "por_unidad": por_unidad, "fcr": fcr,
         "confianza_baja_por_propiedad": confianza_baja_por_propiedad,
         "sentimiento_negativo_por_propiedad": sentimiento_negativo_por_propiedad,
+        "confianza_baja_por_unidad": confianza_baja_por_unidad,
+        "sentimiento_negativo_por_unidad": sentimiento_negativo_por_unidad,
         "ejemplos_baja_confianza": ejemplos_baja_confianza,
         "rendimiento_por_unidad": rendimiento_por_unidad,
     }
