@@ -650,7 +650,7 @@ async def borrar_historial_de_unidad(telegram_id: str, property_id: str, unit_id
     historial_archivo al momento de crearse. Así la conversación del
     próximo huésped en esa misma casa no arrastra reclamos o
     situaciones de quien ya se fue, y nada se pierde para siempre."""
-    filtro_unidad = f"unit_id.eq.{unit_id}" if unit_id else "unit_id.is.null"
+    filtro_unidad = f"unit_id=eq.{unit_id}" if unit_id else "unit_id=is.null"
     url = (
         f"{_base_url()}/rest/v1/historial_conversacion"
         f"?telegram_id=eq.{telegram_id}&property_id=eq.{property_id}&{filtro_unidad}"
@@ -667,8 +667,8 @@ async def obtener_historial_conversacion(telegram_id: str, property_id: str | No
     vienen en None) — evita que el contexto de una casa (o de una
     unidad puntual dentro de un condominio) se filtre a la respuesta
     de otra cuando el admin salta de un tema a otro en el mismo chat."""
-    filtro_propiedad = f"property_id.eq.{property_id}" if property_id else "property_id.is.null"
-    filtro_unidad = f"unit_id.eq.{unit_id}" if unit_id else "unit_id.is.null"
+    filtro_propiedad = f"property_id=eq.{property_id}" if property_id else "property_id=is.null"
+    filtro_unidad = f"unit_id=eq.{unit_id}" if unit_id else "unit_id=is.null"
     url = (
         f"{_base_url()}/rest/v1/historial_conversacion"
         f"?telegram_id=eq.{telegram_id}&{filtro_propiedad}&{filtro_unidad}&order=creado_en.desc&limit={limite}"
