@@ -171,14 +171,16 @@ async def listar_propiedades_resumen() -> list[dict]:
         return []
 
 
-async def _mapa_etiquetas_unidad() -> dict:
+def _mapa_etiquetas_unidad(filas: list[dict]) -> dict:
     """Arma {(property_id, unit_id): 'Nombre legible'} — combina
     propiedad, número de unidad y nombre de Airbnb, en ese orden, ej.
     'Urban Escalante — 2307 — Experiencia con vistas a la montaña y la
     ciudad'. Si la unidad no tiene título de Airbnb cargado todavía, se
     usa su nombre interno en su lugar. Con una sola unidad, el nombre
-    de la propiedad ya alcanza."""
-    filas = await listar_propiedades_con_datos()
+    de la propiedad ya alcanza. Recibe `filas` ya traídas (el resultado
+    de listar_propiedades_con_datos) en vez de pedirlas de nuevo —
+    generar_informe_mensual ya las necesita para otra cosa, así se
+    evita una segunda consulta idéntica a la tabla properties."""
     mapa = {}
     for f in filas:
         pid = f["id"]
@@ -246,8 +248,9 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
             }
         filas = resp.json()
 
-    propiedades = {p["id"]: p["nombre"] for p in await listar_propiedades_resumen()}
-    etiquetas_unidad = await _mapa_etiquetas_unidad()
+    propiedades_con_datos = await listar_propiedades_con_datos()
+    propiedades = {p["id"]: p["nombre"] for p in propiedades_con_datos}
+    etiquetas_unidad = _mapa_etiquetas_unidad(propiedades_con_datos)
 
     por_tipo, por_sentimiento, por_confianza, por_propiedad = {}, {}, {}, {}
     confianza_baja_por_propiedad, sentimiento_negativo_por_propiedad = {}, {}
