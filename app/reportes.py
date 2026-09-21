@@ -50,11 +50,11 @@ def _whatsapp_api_configurada() -> bool:
 
 async def crear_y_programar_reporte(
     chat_id: int, tipo: str, property_id: str | None, nombre_propiedad: str | None,
-    detalle: str, numero_destino: str | None,
+    detalle: str, numero_destino: str | None, unit_id: str | None = None,
 ) -> None:
     minutos = settings.AUTO_ENVIO_WHATSAPP_MINUTOS
     report_id = await supabase_client.crear_reporte(
-        chat_id, tipo, property_id, nombre_propiedad, detalle, numero_destino, minutos
+        chat_id, tipo, property_id, nombre_propiedad, detalle, numero_destino, minutos, unit_id
     )
     if not report_id:
         await telegram_client.enviar_mensaje(chat_id, "⚠️ Detecté un posible reporte pero no lo pude registrar (error de base de datos).")
@@ -62,10 +62,10 @@ async def crear_y_programar_reporte(
 
     # Seguimiento de recurrencia — mensaje aparte, PARA EL ADMINISTRADOR
     # (no para el huésped), avisando si esto se viene repitiendo en la
-    # misma propiedad. Se cuenta esta vez incluida.
+    # misma propiedad/unidad. Se cuenta esta vez incluida.
     if property_id:
         DIAS_VENTANA = 7
-        cantidad = await supabase_client.contar_reportes_recientes(property_id, tipo, DIAS_VENTANA)
+        cantidad = await supabase_client.contar_reportes_recientes(property_id, tipo, DIAS_VENTANA, unit_id)
         if cantidad >= 2:
             await telegram_client.enviar_mensaje(
                 chat_id,

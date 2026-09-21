@@ -105,6 +105,7 @@ create table if not exists reportes_incidencias (
   telegram_chat_id text,
   tipo text not null,             -- 'mantenimiento' | 'limpieza'
   property_id text references properties(id),
+  unit_id text,                   -- unidad puntual si se identificó (null = a nivel de todo el complejo)
   nombre_propiedad text,
   detalle text not null,
   numero_destino text,            -- E.164, ej. +50688887777 (null = no hay número configurado)

@@ -316,7 +316,7 @@ async def _calcular_fcr_mes(anio: int, mes: int) -> dict | None:
     url = (
         f"{_base_url()}/rest/v1/reportes_incidencias"
         f"?creado_en=gte.{_iso_url(desde_dt)}&creado_en=lt.{_iso_url(hasta_con_margen)}"
-        f"&select=property_id,tipo,creado_en&order=creado_en.asc"
+        f"&select=property_id,unit_id,tipo,creado_en&order=creado_en.asc"
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url, headers=_headers())
@@ -325,9 +325,13 @@ async def _calcular_fcr_mes(anio: int, mes: int) -> dict | None:
             return None
         filas = resp.json()
 
+    # Se agrupa por propiedad + UNIDAD + tipo — no solo por propiedad. Sin la
+    # unidad, dos problemas distintos en dos casas distintas del mismo
+    # condominio (ej. Urban Escalante) se contarían como "el mismo problema
+    # repitiéndose", bajando el FCR de forma artificial.
     grupos: dict[tuple, list] = {}
     for f in filas:
-        clave = (f.get("property_id"), f.get("tipo"))
+        clave = (f.get("property_id"), f.get("unit_id"), f.get("tipo"))
         grupos.setdefault(clave, []).append(datetime.fromisoformat(f["creado_en"].replace("Z", "+00:00")))
 
     total_del_mes = 0
@@ -444,16 +448,19 @@ async def obtener_numero_whatsapp(property_id: str | None, tipo: str) -> str | N
     return None
 
 
-async def contar_reportes_recientes(property_id: str, tipo: str, dias: int) -> int:
-    """Cuenta reportes del mismo tipo en la misma propiedad, en los
-    últimos `dias` — para detectar problemas recurrentes (ej. el mismo
-    aire acondicionado fallando varias veces en la semana)."""
+async def contar_reportes_recientes(property_id: str, tipo: str, dias: int, unit_id: str | None = None) -> int:
+    """Cuenta reportes del mismo tipo en la misma propiedad (y misma unidad,
+    si se identificó una puntual), en los últimos `dias` — para detectar
+    problemas recurrentes (ej. el mismo aire acondicionado fallando varias
+    veces en la semana). Filtrar también por unidad evita mezclar dos
+    problemas distintos en dos casas distintas del mismo condominio."""
     if not property_id:
         return 0
     desde = _iso_url(datetime.now(timezone.utc) - timedelta(days=dias))
+    filtro_unidad = f"&unit_id=eq.{unit_id}" if unit_id else "&unit_id=is.null"
     url = (
         f"{_base_url()}/rest/v1/reportes_incidencias"
-        f"?property_id=eq.{property_id}&tipo=eq.{tipo}&creado_en=gte.{desde}&select=id"
+        f"?property_id=eq.{property_id}&tipo=eq.{tipo}&creado_en=gte.{desde}{filtro_unidad}&select=id"
     )
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, headers=_headers())
@@ -465,7 +472,7 @@ async def contar_reportes_recientes(property_id: str, tipo: str, dias: int) -> i
 
 async def crear_reporte(
     telegram_chat_id: str, tipo: str, property_id: str | None, nombre_propiedad: str | None,
-    detalle: str, numero_destino: str | None, minutos_espera: int,
+    detalle: str, numero_destino: str | None, minutos_espera: int, unit_id: str | None = None,
 ) -> str | None:
     enviar_en = (datetime.now(timezone.utc) + timedelta(minutes=minutos_espera)).isoformat()
     url = f"{_base_url()}/rest/v1/reportes_incidencias"
@@ -473,6 +480,7 @@ async def crear_reporte(
         "telegram_chat_id": str(telegram_chat_id),
         "tipo": tipo,
         "property_id": property_id,
+        "unit_id": unit_id,
         "nombre_propiedad": nombre_propiedad,
         "detalle": detalle,
         "numero_destino": numero_destino,
