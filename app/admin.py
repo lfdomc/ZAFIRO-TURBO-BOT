@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 
 from app.config import settings
-from app import supabase_client, property_service, state, fuente_externa, completitud, email_client
+from app import supabase_client, property_service, state, fuente_externa, completitud, email_client, graficos_informe
 
 logger = logging.getLogger("admin")
 router = APIRouter()
@@ -203,6 +203,14 @@ def _formatear_informe_html(informe: dict) -> str:
     total = informe["total_consultas"]
     nombre_mes = NOMBRES_MES[informe["mes"] - 1]
 
+    # Resumen ejecutivo — los 4 números que más le importan al encargado,
+    # arriba de todo, antes de entrar al detalle.
+    pct_confianza_alta = round(informe["por_confianza"].get("alta", 0) / total * 100) if total else 0
+    pct_sentimiento_negativo = round(informe["por_sentimiento"].get("negativo", 0) / total * 100) if total else 0
+    fcr_dato = informe.get("fcr") or {}
+    fcr_pct_kpi = fcr_dato.get("fcr_pct")
+    fcr_texto_kpi = f"{fcr_pct_kpi}%" if fcr_pct_kpi is not None else "—"
+
     def _filas(d: dict) -> str:
         if not d:
             return "<tr><td>—</td><td>—</td></tr>"
@@ -255,28 +263,78 @@ def _formatear_informe_html(informe: dict) -> str:
             partes.append(fila)
         return "".join(partes)
 
+    def _tarjeta_kpi(valor: str, etiqueta: str, color: str) -> str:
+        return f"""
+        <td style="width:50%;padding:6px;">
+          <div style="border:1px solid #e2e8f0;border-radius:8px;padding:14px 16px;background:#f8fafc;">
+            <p style="font-size:26px;font-weight:800;color:{color};margin:0;">{valor}</p>
+            <p style="font-size:11px;color:#64748b;margin:4px 0 0 0;text-transform:uppercase;letter-spacing:0.5px;">{etiqueta}</p>
+          </div>
+        </td>
+        """
+
+    estilo_marca_bg = "#1e3a8a"
+
     estilo_tabla = "border-collapse:collapse;width:100%;margin-bottom:24px;"
     estilo_celda = "border:1px solid #e2e8f0;padding:8px 12px;text-align:left;font-size:14px;"
     estilo_header = estilo_celda + "background:#f8fafc;font-weight:600;"
 
+    def _img(b64: str) -> str:
+        if not b64:
+            return ""
+        return f'<img src="data:image/png;base64,{b64}" width="480" style="display:block;margin:8px 0 20px 0;" />'
+
+    img_tipo = _img(graficos_informe.grafico_circular(informe["por_tipo"], "Consultas por tipo"))
+    img_sentimiento = _img(graficos_informe.grafico_circular(informe["por_sentimiento"], "Consultas por sentimiento"))
+    img_confianza = _img(graficos_informe.grafico_circular(informe["por_confianza"], "Confianza de las respuestas"))
+    img_volumen = _img(graficos_informe.grafico_barras_volumen(informe["por_propiedad"], "Consultas por propiedad"))
+    img_confianza_unidad = _img(graficos_informe.grafico_barras_semaforo(
+        informe.get("rendimiento_por_unidad") or [], "confianza_pct", "confianza_color",
+        "% de respuestas de confianza alta, por unidad", "% confianza alta",
+    ))
+    img_sentimiento_unidad = _img(graficos_informe.grafico_barras_semaforo(
+        informe.get("rendimiento_por_unidad") or [], "sentimiento_pct", "sentimiento_color",
+        "% sin sentimiento negativo, por unidad", "% sin sentimiento negativo",
+    ))
+
     return f"""
-    <div style="font-family:sans-serif;color:#1e293b;max-width:640px;">
-      <h2 style="color:#1e3a8a;">Informe mensual — {nombre_mes} {informe['anio']}</h2>
-      <p><strong>{total}</strong> consultas registradas en total.</p>
+    <style>@page {{ size: letter; margin: 1.5cm; }}</style>
+    <div style="font-family:sans-serif;color:#1e293b;max-width:520px;">
+
+      <div style="background:{estilo_marca_bg};padding:22px 24px;border-radius:8px;margin-bottom:24px;">
+        <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">ZAFIRO PROPERTY MANAGEMENT</span><br/>
+        <span style="color:white;font-size:22px;font-weight:700;line-height:2;">Informe mensual de atención al huésped</span><br/>
+        <span style="color:#dbeafe;font-size:13px;">{nombre_mes.capitalize()} {informe['anio']}</span>
+      </div>
+
+      <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:10px;">Resumen ejecutivo</p>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:28px;">
+        <tr>
+          {_tarjeta_kpi(str(total), "Consultas totales", "#1e3a8a")}
+          {_tarjeta_kpi(f"{pct_confianza_alta}%", "Confianza alta", "#16a34a" if pct_confianza_alta >= 70 else "#d97706" if pct_confianza_alta >= 40 else "#dc2626")}
+        </tr>
+        <tr>
+          {_tarjeta_kpi(f"{pct_sentimiento_negativo}%", "Sentimiento negativo", "#dc2626" if pct_sentimiento_negativo >= 20 else "#d97706" if pct_sentimiento_negativo >= 10 else "#16a34a")}
+          {_tarjeta_kpi(fcr_texto_kpi, "First Contact Resolution", "#1e3a8a")}
+        </tr>
+      </table>
 
       <h3>Por tipo de consulta</h3>
+      {img_tipo}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Tipo</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_tipo'])}
       </table>
 
       <h3>Por sentimiento</h3>
+      {img_sentimiento}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Sentimiento</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_sentimiento'])}
       </table>
 
       <h3>Confianza de las respuestas del bot</h3>
+      {img_confianza}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Confianza</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_confianza'])}
@@ -286,6 +344,7 @@ def _formatear_informe_html(informe: dict) -> str:
       {_seccion_fcr(informe.get('fcr'))}
 
       <h3>Por propiedad</h3>
+      {img_volumen}
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Propiedad</th><th style="{estilo_header}">Desglose</th></tr>
         {_filas_propiedad()}
@@ -296,6 +355,8 @@ def _formatear_informe_html(informe: dict) -> str:
         El detalle más fino — por casa/apartamento puntual, no solo por condominio. Verde = va bien,
         amarillo = revisar, rojo = necesita atención.
       </p>
+      {img_confianza_unidad}
+      {img_sentimiento_unidad}
       <table style="{estilo_tabla}">
         <tr>
           <th style="{estilo_header}">Unidad</th>
@@ -321,7 +382,12 @@ def _formatear_informe_html(informe: dict) -> str:
       <h3>Ejemplos de baja confianza este mes</h3>
       {_lista_ejemplos(informe['ejemplos_baja_confianza'])}
 
-      <p style="color:#94a3b8;font-size:12px;">Generado automáticamente por Zafiro Turbo.</p>
+      <div style="border-top:1px solid #e2e8f0;margin-top:16px;padding-top:12px;">
+        <p style="color:#94a3b8;font-size:11px;margin:0;">
+          Generado automáticamente por Zafiro Turbo el {datetime.now(timezone.utc).strftime('%d/%m/%Y')}. Documento
+          confidencial — uso interno de Zafiro Property Management.
+        </p>
+      </div>
     </div>
     """
 
