@@ -139,7 +139,7 @@ async def generar_respuesta(payload_contents: list[dict], system_instruction: st
 
 
 TIPOS_CONSULTA = (
-    "informativa", "mantenimiento", "limpieza", "queja", "solicitud_excepcion", "emergencia", "otro",
+    "informativa", "mantenimiento", "limpieza", "queja", "requiere_aprobacion", "administrativo", "emergencia", "otro",
 )
 SENTIMIENTOS = ("positivo", "neutral", "negativo")
 
@@ -162,13 +162,19 @@ async def clasificar_consulta(texto: str) -> dict:
         "acondicionado, fuga de agua, electrodoméstico roto, cerradura, plomería, "
         "electricidad, etc.)\n"
         "- 'limpieza': reporta un problema de limpieza o aseo (suciedad, ropa de "
-        "cama, basura, olores, etc.)\n"
+        "cama, basura, olores, etc.), O pregunta por un objeto perdido/olvidado que "
+        "el equipo de limpieza tendría que buscar (ej. '¿encontraron un pijama?', "
+        "'se me quedó un cargador', 'dejé algo olvidado')\n"
         "- 'queja': insatisfacción o malestar general que NO es un problema físico "
         "a reparar ni de limpieza (ruido, vecinos, expectativas no cumplidas, mal "
         "trato, la propiedad no es como se anunciaba, etc.)\n"
-        "- 'solicitud_excepcion': pide algo que depende de una aprobación humana "
-        "(early check-in, late check-out, descuento, reembolso, traer una mascota "
-        "no permitida, un huésped extra, una fiesta, etc.)\n"
+        "- 'requiere_aprobacion': pide algo operativo que depende de una aprobación "
+        "humana del anfitrión (early check-in, late check-out, traer una mascota no "
+        "permitida, un huésped extra, una fiesta, etc.)\n"
+        "- 'administrativo': un reclamo financiero (cobro indebido, quiere un "
+        "descuento o un reembolso), pide cambiar las fechas de su reserva, o pide "
+        "cambiar de unidad/propiedad — cosas que resuelve el encargado "
+        "administrativo, no el de atención al huésped\n"
         "- 'emergencia': describe una situación de seguridad real (fuego, humo, "
         "olor a gas, alguien lastimado o en peligro)\n"
         "- 'informativa': pregunta un dato (wifi, horarios, cómo llegar, reglas, "

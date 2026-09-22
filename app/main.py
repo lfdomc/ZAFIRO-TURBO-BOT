@@ -246,9 +246,12 @@ SYSTEM_PROMPT_ADMIN = (
     "asumas que no existe (puede que la búsqueda no lo haya traído esta vez) — y "
     "en cualquier caso, NUNCA lo digas con frases tipo 'no cuento con esa "
     "información en mi base de datos' (eso suena a mensaje de sistema, no a algo "
-    "que le dirías a un huésped real). Respondé como lo haría el equipo de "
-    "anfitriones ante esa situación (ej. 'dejame confirmarte ese dato con el "
-    "equipo y te aviso'), sin inventar nada que no esté en el contexto.\n"
+    "que le dirías a un huésped real), y TAMPOCO con frases que suenen dudosas o "
+    "inseguras ('no estoy segura', 'no tengo certeza', 'creo que', 'podría ser'). "
+    "Respondé como lo haría el equipo de anfitriones ante esa situación, con un "
+    "tono seguro y profesional — usá frases como 'lo confirmo con el equipo y te "
+    "aviso' o 'eso queda sujeto a confirmación', sin inventar nada que no esté en "
+    "el contexto.\n"
     "4. Nunca le des instrucciones al ADMINISTRADOR sobre qué hacer (frases como "
     "'te sugiero', 'deberías', 'procedé con...') — el mensaje completo es PARA el "
     "huésped, así que resolvé o reconocé su situación hablándole a él.\n"
@@ -337,6 +340,46 @@ PATRONES_DESPEDIDA = (
 def _parece_despedida(texto: str) -> bool:
     texto_norm = _normalizar_para_cache(texto)
     return any(p in texto_norm for p in PATRONES_DESPEDIDA)
+
+
+# Frases que la regla 3 del prompt le pide a Sofía usar cuando le falta un
+# dato puntual (diferir en vez de inventar o decir "no tengo información").
+# Si la respuesta las contiene, es una respuesta que queda pendiente de
+# algo — no debería calificar como confianza alta aunque la propiedad y la
+# unidad se hayan identificado bien.
+PATRONES_INCERTIDUMBRE = (
+    "confirmo con el equipo", "confirmar con el equipo", "confirmaremos con el equipo",
+    "consulto con el equipo", "consultar con el equipo", "consultamos con el equipo",
+    "voy a verificar", "vamos a verificar", "voy a confirmar", "vamos a confirmar",
+    "dejame confirmar", "déjame confirmar", "dejame confirmarte", "déjame confirmarte",
+    "le confirmamos en breve", "en breve le confirmamos", "le estaremos confirmando",
+    "lo voy a confirmar", "lo vamos a confirmar", "eso lo confirmo",
+    # Dudas más generales, no solo "confirmo con el equipo" — cubre otras
+    # formas en que Sofía puede mostrar que no tiene el dato con certeza.
+    "no tengo ese dato", "no tengo esa información", "no cuento con ese dato",
+    "no cuento con esa información", "no tengo la certeza", "no estoy segura",
+    "no estoy seguro", "podría ser que", "es posible que no", "habría que verificar",
+    "habría que confirmar", "sujeto a confirmación", "pendiente de confirmar",
+)
+
+
+def _respuesta_expresa_incertidumbre(texto: str) -> bool:
+    texto_norm = _normalizar_para_cache(texto)
+    return any(p in texto_norm for p in PATRONES_INCERTIDUMBRE)
+
+
+# Nombres legibles para mostrar en el mensaje de confianza — las claves
+# tienen que coincidir con TIPOS_CONSULTA en gemini_client.py.
+ETIQUETAS_TIPO_CONSULTA = {
+    "informativa": "Informativa",
+    "mantenimiento": "Mantenimiento",
+    "limpieza": "Limpieza",
+    "queja": "Queja",
+    "requiere_aprobacion": "Requiere aprobación",
+    "administrativo": "Administrativo",
+    "emergencia": "Emergencia",
+    "otro": "Otro",
+}
 
 
 def _construir_contexto(fragmentos: list[dict]) -> str:
@@ -508,25 +551,44 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     await telegram_client.enviar_mensaje(chat_id, respuesta)
 
-    # Calificación de confianza — SIEMPRE en un mensaje aparte, para no
-    # estorbar el copiar y pegar del mensaje de arriba. Se basa en qué
-    # tan seguros estamos de la propiedad/unidad y en si de verdad se
-    # encontró contexto para responder. Se guarda también en el
-    # historial, para poder medir en el informe mensual qué tan seguido
-    # el bot está respondiendo con certeza.
-    if not contexto or not property_id_mencionada:
-        nivel_confianza = "baja"
-        await telegram_client.enviar_mensaje(chat_id, "🔴 Confianza: baja — revisá antes de enviar.")
-    elif not unit_id_mencionado:
-        nivel_confianza = "media"
-        await telegram_client.enviar_mensaje(chat_id, "🟡 Confianza: media — no se identificó la unidad exacta.")
-    else:
-        nivel_confianza = "alta"
-        await telegram_client.enviar_mensaje(chat_id, "🟢 Confianza: alta.")
-
     clasificacion = await gemini_client.clasificar_consulta(texto_usuario)
     tipo_consulta = clasificacion["tipo"]
     sentimiento = clasificacion["sentimiento"]
+
+    # Confianza + tipo + situacional — TODO en un solo mensaje aparte, para
+    # no llenar el chat de avisos sueltos. La confianza se basa en 2
+    # factores, cada uno sí/no:
+    #   A) ¿se identificaron propiedad Y unidad con certeza?
+    #   B) ¿la respuesta trae la información pedida, sin quedar pendiente
+    #      de confirmar/verificar algo?
+    # Los dos ✓ → verde. Solo uno ✓ → amarillo. Ninguno ✓ → rojo.
+    incierta = _respuesta_expresa_incertidumbre(respuesta)
+    factor_propiedad_unidad = bool(property_id_mencionada and unit_id_mencionado)
+    factor_tiene_info = bool(contexto) and not incierta
+    aciertos = int(factor_propiedad_unidad) + int(factor_tiene_info)
+
+    if aciertos == 2:
+        nivel_confianza = "alta"
+        linea_confianza = "🟢 Confianza: Alta"
+    elif aciertos == 1:
+        nivel_confianza = "media"
+        motivo = "no se identificó bien la propiedad/unidad" if not factor_propiedad_unidad else "queda pendiente de confirmar/verificar algo"
+        linea_confianza = f"🟡 Confianza: Media — {motivo}"
+    else:
+        nivel_confianza = "baja"
+        linea_confianza = "🔴 Confianza: Baja — revisá antes de enviar"
+
+    etiqueta_tipo = ETIQUETAS_TIPO_CONSULTA.get(tipo_consulta, tipo_consulta)
+    mensaje_confianza = f"{linea_confianza} · Tipo: {etiqueta_tipo}"
+    # Situacional — no cambia el color de la confianza, se agrega como
+    # línea aparte dentro del MISMO mensaje. Un early check-in o un late
+    # check-out no son un dato fijo que el bot pueda acertar o no:
+    # dependen de factores externos (si hay huéspedes antes o después,
+    # etc.) que ni el bot ni el contexto pueden saber. Por más segura que
+    # se vea la respuesta, siempre conviene que lo mires vos.
+    if tipo_consulta in ("requiere_aprobacion", "administrativo"):
+        mensaje_confianza += "\n🔵 Situacional"
+    await telegram_client.enviar_mensaje(chat_id, mensaje_confianza)
 
     try:
         await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado, tipo_consulta, sentimiento, nivel_confianza)
