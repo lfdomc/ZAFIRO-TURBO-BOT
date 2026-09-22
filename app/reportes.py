@@ -60,16 +60,17 @@ async def crear_y_programar_reporte(
         await telegram_client.enviar_mensaje(chat_id, "⚠️ Detecté un posible reporte pero no lo pude registrar (error de base de datos).")
         return
 
-    # Seguimiento de recurrencia — mensaje aparte, PARA EL ADMINISTRADOR
-    # (no para el huésped), avisando si esto se viene repitiendo en la
-    # misma propiedad/unidad. Se cuenta esta vez incluida.
+    # Seguimiento de recurrencia — se arma el texto ahora pero se manda
+    # MÁS ABAJO, combinado con el mensaje de destino (envío automático,
+    # WhatsApp, o falta de número/chat configurado), para no llenar el
+    # chat de mensajes sueltos.
+    nota_seguimiento = ""
     if property_id:
         DIAS_VENTANA = 7
         cantidad = await supabase_client.contar_reportes_recientes(property_id, tipo, DIAS_VENTANA, unit_id)
         if cantidad >= 2:
-            await telegram_client.enviar_mensaje(
-                chat_id,
-                f"📋 Seguimiento (interno): este es el {cantidad}° reporte de *{tipo}* en "
+            nota_seguimiento = (
+                f"\n\n📋 Seguimiento (interno): este es el {cantidad}° reporte de *{tipo}* en "
                 f"{nombre_propiedad or 'esta propiedad'} en los últimos {DIAS_VENTANA} días — "
                 f"vale la pena revisar si es un problema recurrente."
             )
@@ -84,11 +85,11 @@ async def crear_y_programar_reporte(
         try:
             await telegram_client.enviar_mensaje(int(chat_destino), texto_grupo)
             await supabase_client.actualizar_estado_reporte(report_id, "enviado")
-            await telegram_client.enviar_mensaje(chat_id, f"✅ Reporte de *{tipo}* enviado automáticamente al grupo de Telegram de {nombre_propiedad or 'esta propiedad'}.")
+            await telegram_client.enviar_mensaje(chat_id, f"✅ Reporte de *{tipo}* enviado automáticamente al grupo de Telegram de {nombre_propiedad or 'esta propiedad'}.{nota_seguimiento}")
         except Exception as e:
             logger.warning(f"No se pudo enviar el reporte {report_id} al grupo de Telegram {chat_destino}: {e}")
             await supabase_client.actualizar_estado_reporte(report_id, "error_envio")
-            await telegram_client.enviar_mensaje(chat_id, f"⚠️ Intenté mandar el reporte al grupo de Telegram configurado y falló — revisá que el bot siga siendo miembro de ese chat.")
+            await telegram_client.enviar_mensaje(chat_id, f"⚠️ Intenté mandar el reporte al grupo de Telegram configurado y falló — revisá que el bot siga siendo miembro de ese chat.{nota_seguimiento}")
         return
 
     if not numero_destino:
@@ -96,7 +97,7 @@ async def crear_y_programar_reporte(
             chat_id,
             f"⚠️ Parece un reporte de *{tipo}* para {nombre_propiedad or 'esta propiedad'}, pero no hay número de "
             f"WhatsApp de {tipo} configurado ahí. Agregalo en Admin → Configuración general (o como campo "
-            f"personalizado 'whatsapp_{tipo}' en esa propiedad si necesita uno distinto)."
+            f"personalizado 'whatsapp_{tipo}' en esa propiedad si necesita uno distinto).{nota_seguimiento}"
         )
         return
 
@@ -109,7 +110,7 @@ async def crear_y_programar_reporte(
         # botón para reenviarlo a mano, como ya hacías antes.
         await supabase_client.actualizar_estado_reporte(report_id, "manual")
         botones = [[{"text": "📲 Enviar yo por WhatsApp", "url": link}]]
-        texto_telegram = f"🔧 Reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}\n\n{detalle}"
+        texto_telegram = f"🔧 Reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}\n\n{detalle}{nota_seguimiento}"
         await telegram_client.enviar_mensaje_con_botones(chat_id, texto_telegram, botones)
         return
 
@@ -119,7 +120,7 @@ async def crear_y_programar_reporte(
     ]
     texto_telegram = (
         f"🔧 Reporte de *{tipo}* en {nombre_propiedad or 'una propiedad'}\n\n{detalle}\n\n"
-        f"Si nadie lo envía en {minutos} min, lo mando yo automáticamente por WhatsApp."
+        f"Si nadie lo envía en {minutos} min, lo mando yo automáticamente por WhatsApp.{nota_seguimiento}"
     )
     await telegram_client.enviar_mensaje_con_botones(chat_id, texto_telegram, botones)
 
