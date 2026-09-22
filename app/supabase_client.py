@@ -511,6 +511,37 @@ async def contar_reportes_recientes(property_id: str, tipo: str, dias: int, unit
         return 0
 
 
+async def obtener_chat_telegram_reportes(property_id: str | None, unit_id: str | None, tipo: str) -> str | None:
+    """Chat de Telegram configurado para mandar reportes automáticos de
+    ese tipo (mantenimiento/limpieza/administrativo) en esa unidad —
+    campo personalizado 'telegram_chat_{tipo}', a nivel de unidad
+    primero (si esa unidad puntual tiene su propio grupo) y si no, a
+    nivel de propiedad (un solo grupo para todo el condominio). Por
+    tipo, igual que los números de WhatsApp — mantenimiento, limpieza
+    y administrativo suelen atenderlos personas distintas. None si no
+    hay ninguno configurado — en ese caso el reporte sigue el camino
+    de siempre (WhatsApp manual)."""
+    if not property_id:
+        return None
+    datos = await obtener_property(property_id)
+    if not datos:
+        return None
+    clave = f"telegram_chat_{tipo}"
+
+    if unit_id:
+        for u in datos.get("units", []) or []:
+            if u.get("id") == unit_id:
+                valor = (u.get("camposPersonalizados") or {}).get(clave)
+                if valor and str(valor).strip():
+                    return str(valor).strip()
+                break
+
+    valor_prop = (datos.get("camposPersonalizados") or {}).get(clave)
+    if valor_prop and str(valor_prop).strip():
+        return str(valor_prop).strip()
+    return None
+
+
 async def crear_reporte(
     telegram_chat_id: str, tipo: str, property_id: str | None, nombre_propiedad: str | None,
     detalle: str, numero_destino: str | None, minutos_espera: int, unit_id: str | None = None,

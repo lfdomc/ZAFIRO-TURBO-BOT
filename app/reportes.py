@@ -74,6 +74,23 @@ async def crear_y_programar_reporte(
                 f"vale la pena revisar si es un problema recurrente."
             )
 
+    # Si esa unidad (o la propiedad completa) tiene un grupo de Telegram
+    # configurado, el reporte se manda ahí mismo, de una — sin botón, sin
+    # esperar nada. Esto reemplaza al flujo de WhatsApp solo para esa
+    # unidad/propiedad puntual; el resto sigue funcionando como antes.
+    chat_destino = await supabase_client.obtener_chat_telegram_reportes(property_id, unit_id, tipo)
+    if chat_destino:
+        texto_grupo = _texto_reporte(tipo, nombre_propiedad or "propiedad sin identificar", "", detalle)
+        try:
+            await telegram_client.enviar_mensaje(int(chat_destino), texto_grupo)
+            await supabase_client.actualizar_estado_reporte(report_id, "enviado")
+            await telegram_client.enviar_mensaje(chat_id, f"✅ Reporte de *{tipo}* enviado automáticamente al grupo de Telegram de {nombre_propiedad or 'esta propiedad'}.")
+        except Exception as e:
+            logger.warning(f"No se pudo enviar el reporte {report_id} al grupo de Telegram {chat_destino}: {e}")
+            await supabase_client.actualizar_estado_reporte(report_id, "error_envio")
+            await telegram_client.enviar_mensaje(chat_id, f"⚠️ Intenté mandar el reporte al grupo de Telegram configurado y falló — revisá que el bot siga siendo miembro de ese chat.")
+        return
+
     if not numero_destino:
         await telegram_client.enviar_mensaje(
             chat_id,

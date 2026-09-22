@@ -466,6 +466,17 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
         return {"ok": True}
 
     chat_id = message["chat"]["id"]
+
+    # Si el mensaje viene de un grupo (no de un chat privado con el bot),
+    # contestamos con el chat_id y no seguimos — esto es lo que se usa
+    # para conectar el grupo de una unidad al envío automático de
+    # reportes: se manda cualquier mensaje en el grupo y el bot revela
+    # su propio chat_id, para pegarlo en el campo personalizado de esa
+    # unidad/propiedad.
+    if message["chat"].get("type") in ("group", "supergroup"):
+        await telegram_client.enviar_mensaje(chat_id, f"🆔 El chat_id de este grupo es:\n`{chat_id}`")
+        return {"ok": True}
+
     from_user = message.get("from", {})
     telegram_id = str(from_user.get("id", chat_id))
     nombre_completo = f"{from_user.get('first_name', '')} {from_user.get('last_name', '')}".strip() or "Usuario"
@@ -637,7 +648,7 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     # --- Detección de reportes de mantenimiento/limpieza ---
     try:
-        if tipo_consulta in ("mantenimiento", "limpieza"):
+        if tipo_consulta in ("mantenimiento", "limpieza", "administrativo"):
             if property_id_mencionada:
                 # El reporte debe dejar clarísimo TANTO la propiedad como la
                 # casa/unidad puntual (ej. "Urban Escalante — Gourmet Terrace
