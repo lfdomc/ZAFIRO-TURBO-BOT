@@ -264,3 +264,37 @@ as $$
   order by c.score_rrf desc
   limit match_count;
 $$;
+
+-- ------------------------------------------------------------
+-- Permisos explícitos para la API de datos (PostgREST) — Supabase dejó
+-- de otorgarlos automáticamente a partir del 30 de octubre de 2026 para
+-- tablas nuevas. Sin esto, un proyecto de Supabase creado desde cero
+-- después de esa fecha (ej. para un cliente nuevo) tendría estas tablas
+-- creadas pero inalcanzables por la API — el backend recibiría "permission
+-- denied" en cada consulta. No hace falta correr esto en el proyecto
+-- actual (las tablas ya existentes conservan sus permisos de siempre),
+-- pero si algún día se corre este archivo en un proyecto nuevo, ya
+-- queda listo.
+--
+-- Solo a service_role — es la única llave que usa este backend
+-- (SUPABASE_KEY es una llave de servicio). A propósito NO se le da
+-- acceso a anon/authenticated: varias de estas tablas tienen datos
+-- sensibles (conversaciones de huéspedes, tokens de acceso temporal) y
+-- no hay políticas de RLS activas — dar lectura pública ahí sería
+-- exponerlas a cualquiera con la llave pública del proyecto. Si algún
+-- día el sitio pasa a hablarle a Supabase directo (hoy no lo hace, todo
+-- pasa por este backend), ahí sí habría que sumar RLS antes de abrir
+-- esos permisos.
+do $$
+declare
+  tabla text;
+begin
+  foreach tabla in array array[
+    'properties', 'configuracion_general', 'knowledge_chunks', 'custom_field_defs',
+    'reportes_incidencias', 'accesos_temporales', 'historial_conversacion',
+    'historial_archivo', 'capa_logs'
+  ]
+  loop
+    execute format('grant select, insert, update, delete on public.%I to service_role', tabla);
+  end loop;
+end $$;
