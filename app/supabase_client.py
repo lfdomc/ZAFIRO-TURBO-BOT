@@ -85,6 +85,17 @@ async def upsert_property(property_id: str, nombre: str, grupo: str | None, zona
         return False
 
 
+async def obtener_configuracion_general(clave: str, default=None):
+    url = f"{_base_url()}/rest/v1/configuracion_general?clave=eq.{clave}&select=valor"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200 and resp.json():
+            return resp.json()[0]["valor"]
+        if resp.status_code != 200:
+            logger.error(f"Error en obtener_configuracion_general({clave}): HTTP {resp.status_code}: {resp.text}")
+        return default
+
+
 async def upsert_configuracion_general(clave: str, valor) -> bool:
     url = f"{_base_url()}/rest/v1/configuracion_general"
     payload = {"clave": clave, "valor": valor}

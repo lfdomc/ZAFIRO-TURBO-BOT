@@ -97,6 +97,37 @@ async def listar_campos(x_admin_key: str | None = Header(default=None)):
     return await supabase_client.listar_campos_personalizados()
 
 
+# ------------------------------------------------------------
+# Información general (FAQs, mensajes frecuentes, contactos) — lo que no
+# pertenece a una propiedad puntual. Antes solo se podía cambiar
+# reimportando el JSON completo; esto permite editarla directo desde el
+# panel, sin tocar el archivo a mano.
+# ------------------------------------------------------------
+
+@router.get("/admin/general")
+async def obtener_general(x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    general = await supabase_client.obtener_configuracion_general("general", {})
+    return general or {}
+
+
+@router.post("/admin/general")
+async def guardar_general(payload: dict, x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    check_in = await supabase_client.obtener_configuracion_general("checkInGeneral")
+    check_out = await supabase_client.obtener_configuracion_general("checkOutGeneral")
+    master_table = await supabase_client.obtener_configuracion_general("masterTable", [])
+    # Reindexar_general guarda Y regenera los fragmentos de búsqueda del
+    # bot (knowledge_chunks) — así un cambio acá se refleja también en lo
+    # que Sofía puede encontrar, no solo en lo que se ve en el sitio.
+    await property_service.reindexar_general({
+        "checkInGeneral": check_in, "checkOutGeneral": check_out,
+        "general": payload, "masterTable": master_table,
+    })
+    await _disparar_redeploy_sitio()
+    return {"ok": True}
+
+
 @router.post("/admin/campos")
 async def crear_campo(campo: dict, x_admin_key: str | None = Header(default=None)):
     _verificar_admin_key(x_admin_key)
