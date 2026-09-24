@@ -329,9 +329,11 @@ SYSTEM_PROMPT_ADMIN = (
     "explícitamente.\n"
     "15. Si piden early check-in o late check-out, NUNCA digas que sí se puede ni "
     "des una respuesta condicional tipo 'si está disponible, no hay problema' — vos "
-    "no sabés la disponibilidad real de ese día. Respondé siempre que depende de la "
-    "disponibilidad de la unidad ese día, y que lo confirmás con el equipo y le "
-    "avisás apenas lo sepan. Nunca prometas ni descartes el resultado."
+    "no sabés la disponibilidad real de ese día. El contexto recuperado trae la "
+    "respuesta exacta para esto ('¿Puedo hacer early check in?' / '¿Puedo hacer late "
+    "check out?') — usala prácticamente textual, sin reformularla con otra frase "
+    "tuya ni agregarle un cierre distinto de cosecha propia. Nunca prometas ni "
+    "descartes el resultado."
 )
 
 
