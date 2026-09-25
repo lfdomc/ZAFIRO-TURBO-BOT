@@ -7,6 +7,7 @@ varias cuentas multiplica la cuota efectiva).
 import httpx
 import json
 import logging
+import random
 from tenacity import retry, stop_after_attempt, wait_chain, wait_fixed, retry_if_exception_type
 from app.config import settings
 from app import logging_utils
@@ -30,8 +31,13 @@ class TodasLasClavesSinCupo(Exception):
 
 async def _intentar_embedding_con_todas_las_claves(texto: str, claves: list[str]) -> list[float] | None:
     todas_sin_cupo = True
+    # Mismo criterio que en generar_respuesta: arrancar por una clave al
+    # azar reparte la carga entre las 8 disponibles en vez de agotar
+    # siempre la primera antes de tocar las demás.
+    inicio = random.randrange(len(claves))
+    claves_en_orden = claves[inicio:] + claves[:inicio]
     async with httpx.AsyncClient(timeout=30.0) as client:
-        for i, clave in enumerate(claves):
+        for i, clave in enumerate(claves_en_orden):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={clave}"
             payload = {
                 "model": "models/gemini-embedding-001",
@@ -108,8 +114,18 @@ async def generar_respuesta(payload_contents: list[dict], system_instruction: st
 
     ultimo_error = ""
 
+    # Arranca por una clave al azar en vez de siempre la primera de la
+    # lista — así la carga se reparte entre las 8 disponibles a lo largo
+    # de muchos mensajes, en vez de agotar siempre la misma primero y
+    # recién ahí pasar a las demás (que además suma latencia de más: cada
+    # mensaje tendría que fallar en la clave agotada antes de probar una
+    # que sí sirve). Si esta llamada puntual falla, igual prueba TODAS
+    # las claves y modelos — el orden rota, la cobertura no cambia.
+    inicio = random.randrange(len(claves))
+    claves_en_orden = claves[inicio:] + claves[:inicio]
+
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for k, clave in enumerate(claves):
+        for k, clave in enumerate(claves_en_orden):
             for modelo in MODELOS_GENERACION:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
                 try:
@@ -118,9 +134,17 @@ async def generar_respuesta(payload_contents: list[dict], system_instruction: st
                         data = resp.json()
                         candidatos = data.get("candidates", [])
                         if candidatos:
+                            finish_reason = candidatos[0].get("finishReason", "")
                             partes = candidatos[0].get("content", {}).get("parts", [])
-                            if partes:
-                                return partes[0].get("text", "")
+                            texto = "".join(p.get("text", "") for p in partes)
+                            if texto and finish_reason in ("STOP", ""):
+                                return texto
+                            # Respuesta incompleta (se cortó a mitad de camino, por
+                            # ejemplo por MAX_TOKENS o SAFETY) — no la devolvemos
+                            # como si estuviera bien, probamos con el siguiente
+                            # modelo/clave en vez de mandar algo trunco al huésped.
+                            ultimo_error = f"[clave #{k+1}][{modelo}] respuesta incompleta (finishReason={finish_reason or 'vacío'})"
+                            logger.warning(ultimo_error)
                     elif resp.status_code == 429:
                         ultimo_error = f"[clave #{k+1}][{modelo}] sin cuota (429)"
                         logger.warning(ultimo_error)
