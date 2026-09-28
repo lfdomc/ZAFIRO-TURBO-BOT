@@ -896,12 +896,18 @@ async def guardar_mensaje_historial(
     telegram_id: str, rol: str, contenido: str,
     property_id: str | None = None, unit_id: str | None = None,
     tipo_consulta: str | None = None, sentimiento: str | None = None, confianza: str | None = None,
+    telegram_message_id: int | None = None,
 ) -> None:
     """Guarda el turno en LAS DOS tablas al mismo tiempo — el 'caliente'
     (para el contexto en vivo del bot, se borra a los 4 días) y el
     'histórico' (para análisis/informe mensual, se borra a los 4
     meses). Así nunca depende de que algo se "evicte" del caliente
-    para quedar respaldado — queda archivado desde el primer momento."""
+    para quedar respaldado — queda archivado desde el primer momento.
+
+    telegram_message_id solo se guarda en el histórico (rol='model') —
+    es el id del mensaje que Telegram le asignó al borrador del bot, y
+    permite reconocer después, cuando el admin le hace "reply", a cuál
+    borrador puntual está corrigiendo (ver obtener_historial_por_message_id)."""
     ahora = datetime.now(timezone.utc).isoformat()
     payload_base = {
         "telegram_id": telegram_id, "role": rol, "contenido": contenido,
@@ -916,12 +922,183 @@ async def guardar_mensaje_historial(
         if resp.status_code not in (200, 201, 204):
             logger.error(f"Error guardando turno de historial (caliente): HTTP {resp.status_code}: {resp.text}")
 
+        payload_archivo = {**payload_base, "creado_en": ahora}
+        if telegram_message_id is not None:
+            payload_archivo["telegram_message_id"] = telegram_message_id
         resp2 = await client.post(
-            f"{_base_url()}/rest/v1/historial_archivo", json={**payload_base, "creado_en": ahora},
+            f"{_base_url()}/rest/v1/historial_archivo", json=payload_archivo,
             headers={**_headers(), "Prefer": "return=minimal"},
         )
         if resp2.status_code not in (200, 201, 204):
             logger.error(f"Error guardando turno de historial (histórico): HTTP {resp2.status_code}: {resp2.text}")
+
+
+async def obtener_historial_por_message_id(telegram_message_id: int) -> dict | None:
+    """Busca el borrador del bot (rol='model') que Telegram identificó con
+    ese message_id — se usa cuando el admin le hace 'reply' a un mensaje
+    del bot para corregirlo (Fase 1 de autoaprendizaje por retrieval)."""
+    url = (
+        f"{_base_url()}/rest/v1/historial_archivo"
+        f"?telegram_message_id=eq.{telegram_message_id}&role=eq.model"
+        f"&select=id,telegram_id,contenido,property_id,unit_id,creado_en,respuesta_editada&limit=1"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200:
+            filas = resp.json()
+            return filas[0] if filas else None
+        logger.error(f"Error buscando historial por message_id: HTTP {resp.status_code}: {resp.text}")
+        return None
+
+
+async def obtener_pregunta_anterior(telegram_id: str, antes_de: str) -> str | None:
+    """Trae el texto del último mensaje del HUÉSPED (rol='user') anterior a
+    una fecha dada — se usa para recuperar la pregunta original cuando una
+    corrección del admin resulta ser 'información faltante' que hay que
+    rutear al mismo lugar que un vacío de información detectado en vivo."""
+    url = (
+        f"{_base_url()}/rest/v1/historial_archivo"
+        f"?telegram_id=eq.{telegram_id}&role=eq.user&creado_en=lt.{antes_de}"
+        f"&order=creado_en.desc&select=contenido&limit=1"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200:
+            filas = resp.json()
+            return filas[0]["contenido"] if filas else None
+        return None
+
+
+async def guardar_correccion_admin(historial_id: int, texto_editado: str) -> None:
+    """Guarda en el borrador original (historial_archivo) el texto final
+    que el admin efectivamente mandó, como reply — deja registrado que
+    hubo una corrección y con qué se reemplazó."""
+    url = f"{_base_url()}/rest/v1/historial_archivo?id=eq.{historial_id}"
+    payload = {
+        "respuesta_editada": texto_editado,
+        "editada_en": _iso_url(datetime.now(timezone.utc)),
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error guardando corrección del admin: HTTP {resp.status_code}: {resp.text}")
+
+
+async def registrar_correccion_estilo(
+    property_id: str | None, unit_id: str | None, texto_original: str, texto_editado: str,
+) -> None:
+    """Guarda una corrección de ESTILO (no de información) para revisión
+    manual posterior (panel de Correcciones, aparte de Admin/Dashboard) —
+    NUNCA se usa sola para cambiar respuestas en vivo: eso (Fase 3) requiere
+    que un admin la apruebe explícitamente primero (columna 'aprobada',
+    default false)."""
+    try:
+        url = f"{_base_url()}/rest/v1/correcciones_estilo"
+        payload = {
+            "property_id": property_id, "unit_id": unit_id,
+            "texto_original": texto_original[:2000], "texto_editado": texto_editado[:2000],
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+            if resp.status_code not in (200, 201, 204):
+                logger.error(f"Error guardando corrección de estilo: HTTP {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.error(f"Fallo registrando corrección de estilo: {e}")
+
+
+# ------------------------------------------------------------
+# Panel de Correcciones (Fases 3-4) — aprobación humana de correcciones de
+# estilo y retrieval de las ya aprobadas. Vive separado de vacios_informacion
+# y del informe mensual a propósito: es su propia cola de revisión.
+# ------------------------------------------------------------
+
+async def listar_correcciones_estilo(estado: str = "pendientes") -> list[dict]:
+    """estado: 'pendientes' (sin aprobar ni descartar, default),
+    'aprobadas', 'descartadas' o 'todas'. Resuelve nombre_propiedad y
+    etiqueta_unidad igual que listar_vacios_informacion, para que el panel
+    no tenga que pedir las propiedades aparte."""
+    if estado == "pendientes":
+        filtro = "&aprobada=eq.false&descartada=eq.false"
+    elif estado == "aprobadas":
+        filtro = "&aprobada=eq.true"
+    elif estado == "descartadas":
+        filtro = "&descartada=eq.true"
+    else:
+        filtro = ""
+    url = (
+        f"{_base_url()}/rest/v1/correcciones_estilo"
+        f"?select=id,property_id,unit_id,texto_original,texto_editado,aprobada,aprobada_en,"
+        f"descartada,descartada_en,creado_en{filtro}&order=creado_en.desc"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code != 200:
+            logger.error(f"Error listando correcciones de estilo: HTTP {resp.status_code}: {resp.text}")
+            return []
+        filas = resp.json()
+
+    if filas:
+        propiedades_con_datos = await listar_propiedades_con_datos()
+        propiedades = {p["id"]: p["nombre"] for p in propiedades_con_datos}
+        etiquetas_unidad = _mapa_etiquetas_unidad(propiedades_con_datos)
+        for f in filas:
+            pid, uid = f.get("property_id"), f.get("unit_id")
+            f["nombre_propiedad"] = propiedades.get(pid) or pid
+            f["etiqueta_unidad"] = etiquetas_unidad.get((pid, uid)) if uid else None
+    return filas
+
+
+async def obtener_correccion_estilo(correccion_id: int) -> dict | None:
+    url = (
+        f"{_base_url()}/rest/v1/correcciones_estilo?id=eq.{correccion_id}"
+        f"&select=id,texto_original,texto_editado,aprobada,descartada&limit=1"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code == 200:
+            filas = resp.json()
+            return filas[0] if filas else None
+        return None
+
+
+async def aprobar_correccion_estilo(correccion_id: int, embedding: list[float]) -> None:
+    """Marca la corrección como aprobada Y le guarda el embedding en el
+    mismo paso — sin embedding no entra nunca en buscar_correcciones_estilo_
+    aprobadas, así que una corrección 'aprobada' sin este paso simplemente
+    no se usaría en vivo (falla segura)."""
+    url = f"{_base_url()}/rest/v1/correcciones_estilo?id=eq.{correccion_id}"
+    payload = {
+        "aprobada": True, "aprobada_en": _iso_url(datetime.now(timezone.utc)),
+        "embedding": embedding,
+    }
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.patch(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error aprobando corrección de estilo {correccion_id}: HTTP {resp.status_code}: {resp.text}")
+
+
+async def descartar_correccion_estilo(correccion_id: int) -> None:
+    url = f"{_base_url()}/rest/v1/correcciones_estilo?id=eq.{correccion_id}"
+    payload = {"descartada": True, "descartada_en": _iso_url(datetime.now(timezone.utc))}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error descartando corrección de estilo {correccion_id}: HTTP {resp.status_code}: {resp.text}")
+
+
+async def buscar_correcciones_estilo_aprobadas(embedding: list[float], match_count: int = 2) -> list[dict]:
+    """Retrieval en vivo (Fase 3): trae las correcciones de estilo YA
+    APROBADAS por un admin más parecidas semánticamente a la consulta
+    actual, para inyectarlas como ejemplos de tono en el prompt. Nunca
+    devuelve nada que no haya pasado por aprobar_correccion_estilo."""
+    url = f"{_base_url()}/rest/v1/rpc/buscar_correcciones_estilo_aprobadas"
+    payload = {"query_embedding": embedding, "match_count": match_count}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(url, json=payload, headers=_headers())
+        if resp.status_code == 200:
+            return resp.json()
+        logger.error(f"Error en buscar_correcciones_estilo_aprobadas: HTTP {resp.status_code}: {resp.text}")
+        return []
 
 
 # ------------------------------------------------------------

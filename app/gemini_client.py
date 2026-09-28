@@ -230,3 +230,51 @@ async def clasificar_consulta(texto: str) -> dict:
     except Exception as e:
         logger.warning(f"No se pudo clasificar la consulta (se asume 'otro'/'neutral'): {e}")
         return {"tipo": "otro", "sentimiento": "neutral"}
+
+
+TIPOS_CORRECCION = ("no_es_correccion", "informacion_faltante", "estilo")
+
+
+async def clasificar_correccion(borrador: str, editado: str) -> str:
+    """Fase 2 del autoaprendizaje por retrieval: compara lo que Sofía
+    redactó contra lo que el admin efectivamente mandó (via reply en
+    Telegram) y decide a qué cola rutear la diferencia:
+    - 'no_es_correccion': el admin solo acortó, saludó distinto o mandó
+      casi lo mismo — no hay nada que aprender de esto.
+    - 'informacion_faltante': el admin agregó un DATO que el borrador no
+      tenía (un precio, un horario, una regla) — va a la misma cola que
+      los vacíos de información detectados en vivo.
+    - 'estilo': el admin mantuvo la misma información pero cambió el TONO
+      o la forma (por ejemplo, sacó una disculpa de más) — se guarda para
+      revisión manual y eventual promoción a regla permanente."""
+    system = (
+        "Comparás dos versiones de una misma respuesta de atención al huésped: "
+        "el BORRADOR que escribió un asistente automático, y la versión FINAL "
+        "que un administrador humano terminó enviando (a veces la corrigió, a "
+        "veces la dejó igual). Respondé ÚNICAMENTE con un JSON de la forma "
+        '{"tipo": "..."}, sin texto extra ni bloques de código.\n\n'
+        "Valores posibles:\n"
+        "- 'no_es_correccion': la versión final dice lo mismo que el borrador "
+        "(cambios triviales de redacción, saludo, longitud, o directamente "
+        "idéntica) — no hay ninguna corrección real de fondo.\n"
+        "- 'informacion_faltante': la versión final agrega un DATO concreto "
+        "que el borrador no tenía o tenía mal (un precio, un horario, una "
+        "regla, un código, un nombre, una dirección, una condición).\n"
+        "- 'estilo': la información es la misma en ambas versiones, pero el "
+        "admin cambió el TONO, la actitud o la forma de decirlo (por ejemplo, "
+        "sacó una disculpa, lo hizo más corto, cambió el trato, quitó "
+        "formalidad de más)."
+    )
+    contenido = f"BORRADOR:\n{borrador}\n\nVERSIÓN FINAL DEL ADMIN:\n{editado}"
+    try:
+        respuesta = await generar_respuesta(
+            [{"role": "user", "parts": [{"text": contenido}]}],
+            system_instruction=system, temperatura=0.0,
+        )
+        limpio = respuesta.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        datos = json.loads(limpio)
+        tipo = str(datos.get("tipo", "")).strip().lower()
+        return tipo if tipo in TIPOS_CORRECCION else "no_es_correccion"
+    except Exception as e:
+        logger.warning(f"No se pudo clasificar la corrección (se asume 'no_es_correccion'): {e}")
+        return "no_es_correccion"

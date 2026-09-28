@@ -16,8 +16,12 @@ async def indicar_escribiendo(chat_id: int) -> None:
             logger.warning(f"Excepción en indicar_escribiendo: {e}")
 
 
-async def enviar_mensaje(chat_id: int, texto: str) -> None:
-    """Reintenta en texto plano si el Markdown rompe el parser de Telegram."""
+async def enviar_mensaje(chat_id: int, texto: str) -> int | None:
+    """Reintenta en texto plano si el Markdown rompe el parser de Telegram.
+    Devuelve el message_id del mensaje enviado (o None si falló) — lo
+    necesita el flujo de captura de correcciones (reply-to) para poder
+    identificar después a qué borrador del bot le está respondiendo el
+    admin."""
     if len(texto) > 4096:
         texto = texto[:4090] + "…"
 
@@ -25,9 +29,12 @@ async def enviar_mensaje(chat_id: int, texto: str) -> None:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(url, json={"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"})
         if resp.status_code == 200:
-            return
+            return resp.json().get("result", {}).get("message_id")
         logger.warning(f"Falló envío con Markdown, reintentando en texto plano: {resp.text}")
-        await client.post(url, json={"chat_id": chat_id, "text": texto})
+        resp2 = await client.post(url, json={"chat_id": chat_id, "text": texto})
+        if resp2.status_code == 200:
+            return resp2.json().get("result", {}).get("message_id")
+        return None
 
 
 async def enviar_mensaje_con_botones(chat_id: int, texto: str, botones: list[list[dict]]) -> int | None:

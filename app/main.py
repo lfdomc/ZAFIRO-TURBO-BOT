@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app import gemini_client, supabase_client, telegram_client, state, logging_utils, admin, reportes, public
+from app import gemini_client, supabase_client, telegram_client, state, logging_utils, admin, reportes, public, correcciones
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("airbnb_admin_bot")
@@ -24,6 +24,7 @@ app.add_middleware(
 
 app.include_router(admin.router)
 app.include_router(public.router)
+app.include_router(correcciones.router)
 
 
 @app.on_event("startup")
@@ -410,6 +411,62 @@ def _parece_despedida(texto: str) -> bool:
     return any(p in texto_norm for p in PATRONES_DESPEDIDA)
 
 
+async def _procesar_correccion_admin(reply_to_message_id: int | None, telegram_id: str, texto_editado: str) -> bool:
+    """Fase 1+2 del autoaprendizaje por retrieval: el admin le hizo 'reply'
+    a un borrador del bot para corregirlo. Devuelve True si el mensaje se
+    manejó como corrección (y por lo tanto el webhook no debe seguir con el
+    flujo normal de pregunta/respuesta); False si no encontramos a qué
+    borrador correspondía (mensaje viejo, de antes de esta función) y hay
+    que dejar que siga el flujo normal.
+
+    Nunca propaga excepciones: un fallo acá no debe dejar sin respuesta al
+    admin ni romper el webhook."""
+    if not reply_to_message_id:
+        return False
+    try:
+        fila = await supabase_client.obtener_historial_por_message_id(reply_to_message_id)
+        if not fila:
+            return False
+
+        borrador = (fila.get("contenido") or "").strip()
+        editado = (texto_editado or "").strip()
+        if not editado or borrador == editado:
+            # Reply idéntico o vacío (por ejemplo, un "ok" suelto que no es
+            # en verdad una corrección) — no hay nada que aprender.
+            return True
+
+        await supabase_client.guardar_correccion_admin(fila["id"], editado)
+
+        tipo = await gemini_client.clasificar_correccion(borrador, editado)
+        property_id = fila.get("property_id")
+        unit_id = fila.get("unit_id")
+
+        if tipo == "informacion_faltante" and property_id:
+            pregunta_original = await supabase_client.obtener_pregunta_anterior(telegram_id, fila["creado_en"])
+            if pregunta_original:
+                # Mismo circuito que un vacío detectado en vivo: se registra
+                # y se resuelve de una — el admin ya dio la respuesta correcta
+                # al editar, no hace falta que la vuelva a escribir en el panel.
+                await supabase_client.registrar_vacio_informacion(property_id, unit_id, pregunta_original)
+                vacios = await supabase_client.listar_vacios_informacion(solo_abiertos=True)
+                coincidencia = next(
+                    (v for v in vacios if v.get("property_id") == property_id and v.get("unit_id") == unit_id
+                     and v.get("pregunta", "").strip() == pregunta_original.strip()),
+                    None,
+                )
+                if coincidencia:
+                    await supabase_client.resolver_vacio_informacion(coincidencia["id"], editado)
+        elif tipo == "estilo":
+            await supabase_client.registrar_correccion_estilo(property_id, unit_id, borrador, editado)
+        # 'no_es_correccion': no se guarda nada más — ya quedó el texto
+        # editado en respuesta_editada por si sirve de evidencia después.
+
+        return True
+    except Exception as e:
+        logger.error(f"Fallo procesando corrección de admin (reply_to={reply_to_message_id}): {e}")
+        return True  # Ya hicimos "algo" con el reply — no lo tratamos como pregunta nueva.
+
+
 # Frases que la regla 3 del prompt le pide a Sofía usar cuando le falta un
 # dato puntual (diferir en vez de inventar o decir "no tengo información").
 # Si la respuesta las contiene, es una respuesta que queda pendiente de
@@ -613,6 +670,19 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
         )
         return {"ok": True}
 
+    # --- Captura de correcciones (Fase 1/2 de autoaprendizaje por retrieval) ---
+    # Si el admin le hace "reply" a un borrador que mandó el bot, no es una
+    # pregunta nueva: es una corrección. Se procesa aparte y se corta acá el
+    # flujo normal de pregunta/respuesta.
+    reply_to = message.get("reply_to_message")
+    if reply_to and reply_to.get("from", {}).get("is_bot"):
+        manejado = await _procesar_correccion_admin(reply_to.get("message_id"), telegram_id, texto_usuario)
+        if manejado:
+            return {"ok": True}
+        # Si no encontramos a qué borrador correspondía (por ejemplo, un
+        # reply a un mensaje de antes de que existiera esta función), seguimos
+        # con el flujo normal en vez de perder el mensaje del admin.
+
     await telegram_client.indicar_escribiendo(chat_id)
 
     # Detectamos primero de qué propiedad habla (si la nombra) — se usa
@@ -662,6 +732,29 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     else:
         system_prompt += "\n\nNo se recuperó ningún fragmento de contexto para esta pregunta."
 
+    # Fase 3 del autoaprendizaje por retrieval: ejemplos de tono YA
+    # APROBADOS por un admin, parecidos semánticamente a esta consulta. Nunca
+    # trae nada que no haya pasado por el panel de Correcciones — ver
+    # buscar_correcciones_estilo_aprobadas. Umbral de similitud alto (0.75)
+    # para no meter ejemplos de una situación distinta solo porque coincidió
+    # algo del texto.
+    try:
+        correcciones_similares = await supabase_client.buscar_correcciones_estilo_aprobadas(embedding, match_count=2)
+    except Exception as e:
+        logger.warning(f"No se pudo buscar correcciones de estilo aprobadas: {e}")
+        correcciones_similares = []
+    ejemplos_estilo = [c for c in correcciones_similares if (c.get("similarity") or 0) >= 0.75]
+    if ejemplos_estilo:
+        bloque_ejemplos = "\n\n".join(
+            f"Antes (evitar): {c['texto_original']}\nMejor (así): {c['texto_editado']}"
+            for c in ejemplos_estilo
+        )
+        system_prompt += (
+            "\n\nEjemplos de tono ya aprobados por el equipo para situaciones parecidas a esta "
+            "consulta (usalos como guía de estilo, no los copies literal si no aplican tal cual):\n"
+            f"{bloque_ejemplos}"
+        )
+
     contents = historial + [{"role": "user", "parts": [{"text": texto_usuario}]}]
 
     try:
@@ -678,7 +771,7 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     elif contexto:
         state.cache_faq_set(clave_cache, respuesta)
 
-    await telegram_client.enviar_mensaje(chat_id, respuesta)
+    message_id_respuesta = await telegram_client.enviar_mensaje(chat_id, respuesta)
 
     clasificacion = await gemini_client.clasificar_consulta(texto_usuario)
     tipo_consulta = clasificacion["tipo"]
@@ -734,7 +827,10 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
 
     try:
         await supabase_client.guardar_mensaje_historial(telegram_id, "user", texto_usuario, property_id_mencionada, unit_id_mencionado, tipo_consulta, sentimiento, nivel_confianza)
-        await supabase_client.guardar_mensaje_historial(telegram_id, "model", respuesta, property_id_mencionada, unit_id_mencionado)
+        await supabase_client.guardar_mensaje_historial(
+            telegram_id, "model", respuesta, property_id_mencionada, unit_id_mencionado,
+            telegram_message_id=message_id_respuesta,
+        )
         if property_id_mencionada and _parece_despedida(texto_usuario):
             # El huésped avisó que ya se fue — se borra el historial de ESA
             # casa/unidad puntual (no de otras) para que la conversación del
