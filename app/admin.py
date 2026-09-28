@@ -311,10 +311,12 @@ NOMBRES_MES = [
 def _seccion_indice_servicio(datos: dict | None, etiqueta_celda: str, estilo_celda: str, estilo_header: str, estilo_tabla: str) -> str:
     if not datos or datos.get("pct") is None:
         return "<p style='color:#94a3b8;font-size:13px;'>Sin reportes este mes.</p>"
+    fondos_semaforo = {"verde": "#10261c", "amarillo": "#2a2311", "rojo": "#2a1414"}
+    letras_semaforo = {"verde": "#4ade80", "amarillo": "#fbbf24", "rojo": "#f87171"}
     filas_unidad = "".join(
         f"<tr><td style='{estilo_celda}'>{u['unidad']}</td>"
-        f"<td style='{estilo_celda};background:{ {'verde': '#dcfce7', 'amarillo': '#fef9c3', 'rojo': '#fee2e2'}.get(u['color'], '#f8fafc') };"
-        f"color:{ {'verde': '#166534', 'amarillo': '#854d0e', 'rojo': '#991b1b'}.get(u['color'], '#1e293b') };font-weight:600;'>{u['pct']}% ({u['resueltos_primera_vez']} de {u['total_reportes']})</td></tr>"
+        f"<td style='{estilo_celda};background:{fondos_semaforo.get(u['color'], '#131c2e')};"
+        f"color:{letras_semaforo.get(u['color'], '#e5eaf3')};font-weight:600;'>{u['pct']}% ({u['resueltos_primera_vez']} de {u['total_reportes']})</td></tr>"
         for u in datos["por_unidad"]
     )
     return f"""
@@ -382,7 +384,7 @@ def _formatear_informe_html(informe: dict) -> str:
 
     def _filas_conteo_unidad(d: dict) -> str:
         if not d:
-            return f"<tr><td style='{estilo_celda}' colspan='2'>Ninguna 🎉</td></tr>"
+            return f"<tr><td style='{estilo_celda}' colspan='2'>Ninguna — todo en orden</td></tr>"
         filas_ordenadas = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
         return "".join(
             f"<tr><td style='{estilo_celda}'>{u}</td><td style='{estilo_celda}'>{n}</td></tr>"
@@ -392,23 +394,26 @@ def _formatear_informe_html(informe: dict) -> str:
     def _lista_ejemplos(ejemplos: list, mostrar_confianza: bool = False) -> str:
         if not ejemplos:
             return "<p style='color:#94a3b8;font-size:13px;'>Ninguno en este período.</p>"
-        etiquetas_confianza = {"media": "🟡 Media", "baja": "🔴 Baja"}
+        etiquetas_confianza = {
+            "media": f"<span style='color:{graficos_informe.COLOR_CONFIANZA['media']};'>●</span> Media",
+            "baja": f"<span style='color:{graficos_informe.COLOR_CONFIANZA['baja']};'>●</span> Baja",
+        }
         items = "".join(
             f"<li style='margin-bottom:10px;'>"
-            f"<strong>{e['propiedad']}</strong>"
+            f"<strong style='color:{TEXTO_CLARO};'>{e['propiedad']}</strong>"
             + (f" · {etiquetas_confianza.get(e.get('confianza'), e.get('confianza'))}" if mostrar_confianza and e.get("confianza") else "")
-            + f" · {e.get('tipo', '')} · {e.get('fecha', '')}<br/>"
-            f"<span style='color:#475569;'>{e['mensaje']}</span></li>"
+            + f" <span style='color:{TEXTO_TENUE};'>· {e.get('tipo', '')} · {e.get('fecha', '')}</span><br/>"
+            f"<span style='color:{TEXTO_TENUE};'>{e['mensaje']}</span></li>"
             for e in ejemplos
         )
         return f"<ul style='font-size:13px;padding-left:18px;'>{items}</ul>"
 
     def _celda_color(color: str, texto: str) -> str:
-        fondos = {"verde": "#dcfce7", "amarillo": "#fef9c3", "rojo": "#fee2e2"}
-        letras = {"verde": "#166534", "amarillo": "#854d0e", "rojo": "#991b1b"}
+        fondos = {"verde": "#10261c", "amarillo": "#2a2311", "rojo": "#2a1414"}
+        letras = {"verde": "#4ade80", "amarillo": "#fbbf24", "rojo": "#f87171"}
         return (
-            f"<td style='{estilo_celda}background:{fondos.get(color, '#f8fafc')};"
-            f"color:{letras.get(color, '#1e293b')};font-weight:600;'>{texto}</td>"
+            f"<td style='{estilo_celda}background:{fondos.get(color, FONDO_TARJETA)};"
+            f"color:{letras.get(color, TEXTO_CLARO)};font-weight:600;'>{texto}</td>"
         )
 
     def _filas_rendimiento_unidad() -> str:
@@ -427,27 +432,49 @@ def _formatear_informe_html(informe: dict) -> str:
     def _tarjeta_kpi(valor: str, etiqueta: str, color: str) -> str:
         return f"""
         <td style="width:50%;padding:6px;">
-          <div style="border:1px solid #e2e8f0;border-radius:8px;padding:14px 16px;background:#f8fafc;">
+          <div style="border:1px solid {BORDE};border-radius:8px;padding:14px 16px;background:{FONDO_TARJETA};">
             <p style="font-size:26px;font-weight:800;color:{color};margin:0;">{valor}</p>
-            <p style="font-size:11px;color:#64748b;margin:4px 0 0 0;text-transform:uppercase;letter-spacing:0.5px;">{etiqueta}</p>
+            <p style="font-size:11px;color:{TEXTO_TENUE};margin:4px 0 0 0;text-transform:uppercase;letter-spacing:0.5px;">{etiqueta}</p>
           </div>
         </td>
         """
 
+    # Mismo tema oscuro navy del Dashboard en vivo (App.jsx) — las
+    # constantes de color viven en graficos_informe.py para que el HTML
+    # y los gráficos matplotlib usen EXACTAMENTE los mismos hex.
+    FONDO_PAGINA = "#0b1220"
+    FONDO_TARJETA = graficos_informe.FONDO_TARJETA
+    BORDE = graficos_informe.BORDE_TARJETA
+    TEXTO_CLARO = graficos_informe.TEXTO_CLARO
+    TEXTO_TENUE = graficos_informe.TEXTO_TENUE
     estilo_marca_bg = "#1e3a8a"
 
+    # OJO: "background" no se hereda en CSS — sin ponerlo explícito en
+    # cada <td>, xhtml2pdf los pinta blancos por default (aunque el
+    # contenedor sea oscuro), quedando el texto claro ilegible.
     estilo_tabla = "border-collapse:collapse;width:100%;margin-bottom:24px;"
-    estilo_celda = "border:1px solid #e2e8f0;padding:8px 12px;text-align:left;font-size:14px;"
-    estilo_header = estilo_celda + "background:#f8fafc;font-weight:600;"
+    estilo_celda = f"border:1px solid {BORDE};padding:8px 12px;text-align:left;font-size:14px;color:{TEXTO_CLARO};background:{FONDO_TARJETA};"
+    estilo_header = estilo_celda + f"background:#0f1b33;font-weight:600;"
 
     def _img(b64: str) -> str:
         if not b64:
             return ""
         return f'<img src="data:image/png;base64,{b64}" width="380" style="display:block;margin:8px 0 16px 0;" />'
 
+    # xhtml2pdf/reportlab no pinta el fondo de la página con
+    # "@page { background-color }" ni con "html, body { background }"
+    # (probado — no tiene efecto), pero SÍ soporta "@page { background-image }".
+    # Usamos una imagen sólida navy del tamaño de la hoja carta para que TODA
+    # la hoja —incluido el margen— salga navy, igual que el Dashboard.
+    fondo_pagina_b64 = graficos_informe.imagen_solida(FONDO_PAGINA, ancho=850, alto=1100)
+
     img_tipo = _img(graficos_informe.grafico_circular(informe["por_tipo"], "Consultas por tipo"))
-    img_sentimiento = _img(graficos_informe.grafico_circular(informe["por_sentimiento"], "Consultas por sentimiento"))
-    img_confianza = _img(graficos_informe.grafico_circular(informe["por_confianza"], "Confianza de las respuestas"))
+    img_sentimiento = _img(graficos_informe.grafico_circular(
+        informe["por_sentimiento"], "Consultas por sentimiento", graficos_informe.COLOR_SENTIMIENTO,
+    ))
+    img_confianza = _img(graficos_informe.grafico_circular(
+        informe["por_confianza"], "Confianza de las respuestas", graficos_informe.COLOR_CONFIANZA,
+    ))
     por_unidad_corto = {_etiqueta_corta(u): tipos for u, tipos in por_unidad.items()}
     img_volumen = _img(graficos_informe.grafico_barras_volumen(por_unidad_corto, "Consultas por unidad"))
     rendimiento_corto = [{**r, "unidad": _etiqueta_corta(r["unidad"])} for r in (informe.get("rendimiento_por_unidad") or [])]
@@ -465,11 +492,16 @@ def _formatear_informe_html(informe: dict) -> str:
 
     return f"""
     <style>
-      @page {{ size: letter; margin: 1.5cm; }}
+      @page {{
+        size: letter; margin: 1.5cm;
+        background-image: url("data:image/png;base64,{fondo_pagina_b64}");
+        background-repeat: no-repeat;
+      }}
+      html, body {{ background: {FONDO_PAGINA}; }}
       table {{ page-break-inside: avoid; }}
       h3 {{ page-break-after: avoid; }}
     </style>
-    <div style="font-family:sans-serif;color:#1e293b;max-width:520px;">
+    <div style="font-family:sans-serif;color:{TEXTO_CLARO};background:{FONDO_PAGINA};width:100%;padding:14px;">
 
       <div style="background:{estilo_marca_bg};padding:22px 24px;border-radius:8px;margin-bottom:24px;">
         <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</span><br/>
@@ -477,7 +509,7 @@ def _formatear_informe_html(informe: dict) -> str:
         <span style="color:#dbeafe;font-size:13px;">{titulo_periodo} · Cliente: Zafiro Property Management</span>
       </div>
 
-      <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:10px;">Resumen ejecutivo</p>
+      <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:{TEXTO_TENUE};margin-bottom:10px;">Resumen ejecutivo</p>
       <table style="width:100%;border-collapse:collapse;margin-bottom:28px;">
         <tr>
           {_tarjeta_kpi(str(total), "Consultas totales", "#1e3a8a")}
@@ -556,7 +588,7 @@ def _formatear_informe_html(informe: dict) -> str:
       </table>
 
       {_seccion(f'''
-      <h3>⚠️ Unidades con más respuestas de baja confianza</h3>
+      <h3><span style="color:#d97706;">●</span> Unidades con más respuestas de baja confianza</h3>
       <p style="color:#94a3b8;font-size:12px;">Señal directa de dónde completar más datos — cruzalo con los avisos de la lista de propiedades en Admin.</p>
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Respuestas de baja confianza</th></tr>
@@ -565,7 +597,7 @@ def _formatear_informe_html(informe: dict) -> str:
       ''')}
 
       {_seccion(f'''
-      <h3>😟 Unidades con más sentimiento negativo</h3>
+      <h3><span style="color:#dc2626;">●</span> Unidades con más sentimiento negativo</h3>
       <table style="{estilo_tabla}">
         <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Consultas con sentimiento negativo</th></tr>
         {_filas_conteo_unidad(sentimiento_negativo_por_unidad)}
@@ -573,17 +605,17 @@ def _formatear_informe_html(informe: dict) -> str:
       ''')}
 
       {_seccion(f'''
-      <h3>🟡🔴 Por revisar — confianza media o baja</h3>
+      <h3><span style="color:#d97706;">●</span><span style="color:#dc2626;">●</span> Por revisar — confianza media o baja</h3>
       <p style="color:#94a3b8;font-size:12px;">Contexto real de la pregunta para poder revisar la conversación y ver si falta completar información en esa unidad.</p>
       {_lista_ejemplos(informe.get('ejemplos_por_revisar', []), mostrar_confianza=True)}
       ''')}
 
       {_seccion(f'''
-      <h3>😟 Por revisar — sentimiento negativo</h3>
+      <h3><span style="color:#dc2626;">●</span> Por revisar — sentimiento negativo</h3>
       {_lista_ejemplos(informe.get('ejemplos_sentimiento_negativo', []))}
       ''')}
 
-      <div style="border-top:1px solid #e2e8f0;margin-top:16px;padding-top:12px;">
+      <div style="border-top:1px solid {BORDE};margin-top:16px;padding-top:12px;">
         <p style="color:#94a3b8;font-size:11px;margin:0;">
           Generado automáticamente por S.O.F.I.A. el {datetime.now(timezone.utc).strftime('%d/%m/%Y')}. Documento
           confidencial — uso interno de Zafiro Property Management.
