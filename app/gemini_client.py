@@ -163,7 +163,8 @@ async def generar_respuesta(payload_contents: list[dict], system_instruction: st
 
 
 TIPOS_CONSULTA = (
-    "informativa", "mantenimiento", "limpieza", "queja", "requiere_aprobacion", "administrativo", "emergencia", "otro",
+    "informativa", "mantenimiento", "limpieza", "queja", "agradecimiento",
+    "requiere_aprobacion", "administrativo", "emergencia", "otro",
 )
 SENTIMIENTOS = ("positivo", "neutral", "negativo")
 
@@ -192,6 +193,10 @@ async def clasificar_consulta(texto: str) -> dict:
         "- 'queja': insatisfacción o malestar general que NO es un problema físico "
         "a reparar ni de limpieza (ruido, vecinos, expectativas no cumplidas, mal "
         "trato, la propiedad no es como se anunciaba, etc.)\n"
+        "- 'agradecimiento': mensaje positivo sobre la estancia/atención — "
+        "agradece, felicita, dice que todo estuvo bien o que ya resolvieron algo "
+        "a su gusto — sin reportar ningún problema nuevo. Es el opuesto de "
+        "'queja'.\n"
         "- 'requiere_aprobacion': pide algo operativo que depende de una aprobación "
         "humana del anfitrión (early check-in, late check-out, traer una mascota no "
         "permitida, un huésped extra, una fiesta, etc.)\n"
@@ -203,8 +208,8 @@ async def clasificar_consulta(texto: str) -> dict:
         "olor a gas, alguien lastimado o en peligro)\n"
         "- 'informativa': pregunta un dato (wifi, horarios, cómo llegar, reglas, "
         "código de acceso, etc.) sin reportar ningún problema\n"
-        "- 'otro': no encaja claramente en ninguna de las anteriores (incluye "
-        "saludos, despedidas, agradecimientos)\n\n"
+        "- 'otro': no encaja claramente en ninguna de las anteriores (saludos, "
+        "despedidas, o cualquier cosa que no sea ni queja ni agradecimiento)\n\n"
         "Valores posibles para 'sentimiento': 'positivo' (contento, agradecido), "
         "'neutral' (una consulta normal, sin carga emocional evidente), o "
         "'negativo' (molesto, frustrado, decepcionado)."

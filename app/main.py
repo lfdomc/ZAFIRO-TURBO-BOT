@@ -79,6 +79,7 @@ async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, s
     filas = await supabase_client.listar_propiedades_con_datos()
     texto_norm = _normalizar(texto_usuario)
 
+    texto_norm_compacto = texto_norm.replace(" ", "")
     coincidencias_unidad = set()
     for f in filas:
         datos = f.get("datos") or {}
@@ -90,7 +91,13 @@ async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, s
             ] if c]
             for candidato in candidatos:
                 cnorm = _normalizar(str(candidato)).strip()
-                if len(cnorm) >= 3 and cnorm in texto_norm:
+                if len(cnorm) < 3:
+                    continue
+                # Coincidencia directa ("oasis 3", "oasis #3" → "oasis 3") o,
+                # si el huésped escribió el nombre pegado sin espacio ("oasis3",
+                # "oasis-3" ya normaliza a "oasis 3" pero "oasis3" sin separador
+                # no), comparando ambos lados sin espacios.
+                if cnorm in texto_norm or cnorm.replace(" ", "") in texto_norm_compacto:
                     coincidencias_unidad.add((f["id"], u.get("id")))
                     break
 
@@ -341,7 +348,48 @@ SYSTEM_PROMPT_ADMIN = (
     "de esto se encarga el equipo de atención al huésped (vos misma), no hace "
     "falta pasarlo a nadie más. NUNCA digas que sí se puede, ni des una respuesta "
     "condicional tipo 'si está disponible, no hay problema' — vos no sabés la "
-    "disponibilidad real de ese día."
+    "disponibilidad real de ese día.\n"
+    "16. No te disculpes de más ni le des la razón al huésped por reflejo — ni "
+    "siquiera cuando el reclamo es sobre algo real que la propiedad controla (un "
+    "desperfecto, un error de reserva, algo sucio o dañado). En vez de 'lamento "
+    "mucho', 'disculpá las molestias' o 'siento los inconvenientes', preferí "
+    "un reconocimiento breve y profesional que NO sea una disculpa: 'entiendo "
+    "la situación', 'vamos a revisarlo', 'gracias por avisarnos' — y seguí "
+    "directo con la solución concreta. Esto vale tanto si es un inconveniente "
+    "normal de viaje (vuelo atrasado, clima, tráfico) como si es un desperfecto "
+    "real de la propiedad: reconocé sin disculparte, resolvé, y no aceptes por "
+    "tu cuenta que Zafiro tuvo la culpa ni prometas compensación. Si en algún "
+    "caso puntual de verdad amerita una disculpa (algo grave: la propiedad "
+    "estaba sucia o dañada al llegar, un error nuestro le costó tiempo o "
+    "dinero al huésped), usála UNA sola vez y breve — nunca encadenada con "
+    "otra, nunca repetida más adelante en el mismo mensaje.\n"
+    "Ejemplos:\n"
+    "1) Huésped de Urban Escalante (1411) reporta que el TV no responde ni "
+    "con el control:\n"
+    "  MAL: 'Lamento mucho los inconvenientes con el televisor. Voy a "
+    "coordinar de inmediato con nuestro equipo de mantenimiento...'\n"
+    "  BIEN: 'Entiendo la situación y gracias por avisarnos — vamos a "
+    "coordinar de inmediato con nuestro equipo de mantenimiento para que "
+    "revisen tanto el televisor como el control remoto y lo resuelvan lo "
+    "antes posible.'\n"
+    "2) Mismo huésped reporta VARIOS problemas de golpe (lavadora, mando de "
+    "secadora, cortina rota, ropa ajena olvidada en el baño) — NO uses una "
+    "disculpa por cada uno, ni dos disculpas distintas en el mismo mensaje:\n"
+    "  MAL: 'Lamento mucho los inconvenientes que mencionas... En cuanto a la "
+    "prenda encontrada en el baño, te ofrezco una sincera disculpa por este "
+    "descuido...' (dos disculpas en un mismo mensaje)\n"
+    "  BIEN: 'Gracias por contarnos todo esto con detalle. Vamos a reportar de "
+    "inmediato con mantenimiento lo de la lavadora, el mando y la cortina, y "
+    "con el equipo de limpieza lo de la prenda que encontraste — lo resuelven "
+    "a la brevedad.'\n"
+    "3) Huésped de Urban Escalante (1208B) solo está AVISANDO que ya resolvió "
+    "algo por su cuenta (el link de ubicación no le funcionó pero ya llegó) — "
+    "esto es informativo/agradecimiento, no una queja activa, así que no "
+    "amerita ninguna disculpa:\n"
+    "  MAL: 'Lamentamos mucho el inconveniente con los enlaces de ubicación, "
+    "agradecemos que nos lo hagas saber para revisarlo.'\n"
+    "  BIEN: 'Qué bueno que llegaste bien. Gracias por avisarnos sobre el "
+    "enlace — lo vamos a revisar para que no le pase a nadie más.'"
 )
 
 
@@ -444,6 +492,7 @@ ETIQUETAS_TIPO_CONSULTA = {
     "mantenimiento": "Mantenimiento",
     "limpieza": "Limpieza",
     "queja": "Queja",
+    "agradecimiento": "Agradecimiento",
     "requiere_aprobacion": "Requiere aprobación",
     "administrativo": "Administrativo",
     "emergencia": "Emergencia",
