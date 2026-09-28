@@ -341,6 +341,17 @@ def _formatear_informe_html(informe: dict) -> str:
     nombre_mes = NOMBRES_MES[informe["mes"] - 1]
     titulo_periodo = informe.get("periodo_etiqueta") or f"{nombre_mes.capitalize()} {informe['anio']}"
 
+    def _fecha_legible(iso: str | None) -> str:
+        if not iso:
+            return "—"
+        try:
+            d = datetime.strptime(iso[:10], "%Y-%m-%d")
+            return d.strftime("%d/%m/%Y")
+        except ValueError:
+            return iso
+
+    rango_fechas = f"{_fecha_legible(informe.get('periodo_desde'))} – {_fecha_legible(informe.get('periodo_hasta'))}"
+
     # Resumen ejecutivo — los números que más le importan al encargado,
     # arriba de todo, antes de entrar al detalle.
     pct_confianza_alta = round(informe["por_confianza"].get("alta", 0) / total * 100) if total else 0
@@ -548,14 +559,15 @@ def _formatear_informe_html(informe: dict) -> str:
 
       <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
         <tr>
-          <td style="background:{estilo_marca_bg};padding:24px 26px;border-radius:8px 0 0 8px;width:68%;">
-            <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</span><br/>
-            <span style="color:white;font-size:23px;font-weight:700;line-height:2;">Informe de atención al huésped</span><br/>
-            <span style="color:#dbeafe;font-size:13px;">{titulo_periodo} · Cliente: Zafiro Property Management</span>
+          <td style="background:{estilo_marca_bg};padding:18px 24px;border-radius:8px 0 0 8px;width:66%;vertical-align:top;">
+            <div style="color:#93c5fd;font-size:10.5px;letter-spacing:0.5px;margin:0;line-height:1.4;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</div>
+            <div style="color:white;font-size:21px;font-weight:700;margin:6px 0 0 0;line-height:1.3;">Informe de atención al huésped</div>
+            <div style="color:#dbeafe;font-size:12.5px;margin:8px 0 0 0;line-height:1.3;">{titulo_periodo} · {rango_fechas}</div>
+            <div style="color:#93c5fd;font-size:10.5px;margin:4px 0 0 0;line-height:1.3;">Cliente: Zafiro Property Management</div>
           </td>
-          <td style="background:{COLOR_ACENTO};padding:24px 20px;border-radius:0 8px 8px 0;width:32%;text-align:center;vertical-align:middle;">
-            <span style="color:white;font-size:34px;font-weight:800;display:block;line-height:1.1;">{total}</span>
-            <span style="color:#ffe4d6;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">consultas atendidas</span>
+          <td style="background:{COLOR_ACENTO};padding:18px;border-radius:0 8px 8px 0;width:34%;text-align:center;vertical-align:middle;">
+            <div style="color:white;font-size:32px;font-weight:800;line-height:1.1;">{total}</div>
+            <div style="color:#ffe4d6;font-size:10.5px;text-transform:uppercase;letter-spacing:0.5px;margin-top:2px;">consultas atendidas</div>
           </td>
         </tr>
       </table>
