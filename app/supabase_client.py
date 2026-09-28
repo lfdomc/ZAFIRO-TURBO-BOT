@@ -199,7 +199,14 @@ def _mapa_etiquetas_unidad(filas: list[dict]) -> dict:
         datos = f.get("datos") or {}
         nombre_prop = datos.get("name", f["nombre"])
         unidades = datos.get("units", []) or []
-        mapa[(pid, None)] = nombre_prop
+        # Si la propiedad tiene VARIAS casas/unidades (ej. Villa Verde -
+        # Oasis, con Oasis 1-4) y el mensaje no trajo unit_id (el huésped
+        # no dijo cuál casa puntual), el nombre "pelado" de la propiedad se
+        # veía IDÉNTICO al de una propiedad de una sola unidad — parecía
+        # que esa fila SÍ era una casa específica cuando en realidad es un
+        # cajón de "no sabemos cuál de las 4". Se marca explícito para no
+        # confundir a quien lee el reporte/dashboard.
+        mapa[(pid, None)] = nombre_prop if len(unidades) <= 1 else f"{nombre_prop} (unidad sin especificar)"
         for u in unidades:
             uid = u.get("id")
             if len(unidades) <= 1:
@@ -297,7 +304,7 @@ async def generar_informe_periodo(desde_dt: datetime, hasta_dt: datetime, etique
         pid = f.get("property_id")
         uid = f.get("unit_id")
         nombre_prop = propiedades.get(pid, pid) or "Sin propiedad identificada"
-        etiqueta_u = etiquetas_unidad.get((pid, uid)) or nombre_prop
+        etiqueta_u = etiquetas_unidad.get((pid, uid)) or etiquetas_unidad.get((pid, None)) or nombre_prop
         fecha = (f.get("creado_en") or "")[:10]
 
         por_tipo[t] = por_tipo.get(t, 0) + 1
@@ -341,7 +348,10 @@ async def generar_informe_periodo(desde_dt: datetime, hasta_dt: datetime, etique
         negativo = datos_u["sentimiento"].get("negativo", 0)
         pct_confianza = round(alta / total_u * 100) if total_u else 0
         pct_sentimiento = round((total_u - negativo) / total_u * 100) if total_u else 0
-        etiqueta = etiquetas_unidad.get((pid, uid)) or propiedades.get(pid, pid) or "Sin propiedad identificada"
+        etiqueta = (
+            etiquetas_unidad.get((pid, uid)) or etiquetas_unidad.get((pid, None))
+            or propiedades.get(pid, pid) or "Sin propiedad identificada"
+        )
         rendimiento_por_unidad.append({
             "unidad": etiqueta, "total_consultas": total_u,
             "confianza_pct": pct_confianza, "confianza_color": _color_confianza(pct_confianza),

@@ -447,6 +447,7 @@ def _formatear_informe_html(informe: dict) -> str:
     BORDE = graficos_informe.BORDE_TARJETA
     TEXTO_CLARO = graficos_informe.TEXTO_CLARO
     TEXTO_TENUE = graficos_informe.TEXTO_TENUE
+    COLOR_ACENTO = graficos_informe.COLOR_ACENTO
     estilo_marca_bg = "#1e3a8a"
 
     # OJO: "background" no se hereda en CSS — sin ponerlo explícito en
@@ -456,10 +457,52 @@ def _formatear_informe_html(informe: dict) -> str:
     estilo_celda = f"border:1px solid {BORDE};padding:8px 12px;text-align:left;font-size:14px;color:{TEXTO_CLARO};background:{FONDO_TARJETA};"
     estilo_header = estilo_celda + f"background:#0f1b33;font-weight:600;"
 
-    def _img(b64: str) -> str:
+    def _img(b64: str, ancho: int = 380) -> str:
         if not b64:
             return ""
-        return f'<img src="data:image/png;base64,{b64}" width="380" style="display:block;margin:8px 0 16px 0;" />'
+        return f'<img src="data:image/png;base64,{b64}" width="{ancho}" style="display:block;margin:8px 0 16px 0;" />'
+
+    def _titulo_seccion(texto: str, color_dot: str = "#e1543c") -> str:
+        # Mismo estilo que los encabezados de sección del Dashboard en vivo
+        # (punto de color + mayúsculas) — para que se sienta la misma
+        # jerarquía visual, no un informe corporativo aparte.
+        return (
+            f"<p style='font-size:12px;font-weight:700;letter-spacing:1px;color:{TEXTO_TENUE};"
+            f"margin:28px 0 10px 0;text-transform:uppercase;'>"
+            f"<span style='color:{color_dot};'>●</span> {texto}</p>"
+        )
+
+    def _tarjeta_donut(titulo: str, imagen: str, datos: dict, colores: dict | None = None) -> str:
+        total_d = sum(datos.values()) or 1
+        filas_ordenadas = sorted(datos.items(), key=lambda kv: kv[1], reverse=True)
+        filas_html = "".join(
+            f"<tr>"
+            f"<td style='padding:3px 0;font-size:11.5px;color:{TEXTO_CLARO};'>"
+            f"<span style='color:{(colores or {}).get(k) or graficos_informe.PALETA[i % len(graficos_informe.PALETA)]};'>●</span> {str(k).capitalize()}</td>"
+            f"<td style='padding:3px 0;font-size:11.5px;color:{TEXTO_TENUE};text-align:right;'>{v} · {round(v / total_d * 100)}%</td>"
+            f"</tr>"
+            for i, (k, v) in enumerate(filas_ordenadas)
+        )
+        return f"""
+        <td style="width:33.3%;padding:5px;vertical-align:top;">
+          <div style="border:1px solid {BORDE};border-radius:8px;padding:12px;background:{FONDO_TARJETA};">
+            <p style="font-size:13px;font-weight:700;color:{TEXTO_CLARO};margin:0 0 4px 0;">{titulo}</p>
+            {imagen}
+            <table style="width:100%;border-collapse:collapse;">{filas_html}</table>
+          </div>
+        </td>
+        """
+
+    def _tarjeta_grafico(titulo: str, subtitulo: str, imagenes: str) -> str:
+        return f"""
+        <td style="width:50%;padding:5px;vertical-align:top;">
+          <div style="border:1px solid {BORDE};border-radius:8px;padding:12px;background:{FONDO_TARJETA};">
+            <p style="font-size:13px;font-weight:700;color:{TEXTO_CLARO};margin:0 0 4px 0;">{titulo}</p>
+            {f"<p style='font-size:11px;color:{TEXTO_TENUE};margin:0 0 6px 0;'>{subtitulo}</p>" if subtitulo else ""}
+            {imagenes}
+          </div>
+        </td>
+        """
 
     # xhtml2pdf/reportlab no pinta el fondo de la página con
     # "@page { background-color }" ni con "html, body { background }"
@@ -468,24 +511,24 @@ def _formatear_informe_html(informe: dict) -> str:
     # la hoja —incluido el margen— salga navy, igual que el Dashboard.
     fondo_pagina_b64 = graficos_informe.imagen_solida(FONDO_PAGINA, ancho=850, alto=1100)
 
-    img_tipo = _img(graficos_informe.grafico_circular(informe["por_tipo"], "Consultas por tipo"))
+    img_tipo = _img(graficos_informe.grafico_circular(informe["por_tipo"], "Consultas por tipo"), 190)
     img_sentimiento = _img(graficos_informe.grafico_circular(
         informe["por_sentimiento"], "Consultas por sentimiento", graficos_informe.COLOR_SENTIMIENTO,
-    ))
+    ), 190)
     img_confianza = _img(graficos_informe.grafico_circular(
         informe["por_confianza"], "Confianza de las respuestas", graficos_informe.COLOR_CONFIANZA,
-    ))
+    ), 190)
     por_unidad_corto = {_etiqueta_corta(u): tipos for u, tipos in por_unidad.items()}
-    img_volumen = _img(graficos_informe.grafico_barras_volumen(por_unidad_corto, "Consultas por unidad"))
+    img_volumen = _img(graficos_informe.grafico_barras_volumen(por_unidad_corto, "Consultas por unidad"), 280)
     rendimiento_corto = [{**r, "unidad": _etiqueta_corta(r["unidad"])} for r in (informe.get("rendimiento_por_unidad") or [])]
     img_confianza_unidad = _img(graficos_informe.grafico_barras_semaforo(
         rendimiento_corto, "confianza_pct", "confianza_color",
         "% de respuestas de confianza alta, por unidad", "% confianza alta",
-    ))
+    ), 280)
     img_sentimiento_unidad = _img(graficos_informe.grafico_barras_semaforo(
         rendimiento_corto, "sentimiento_pct", "sentimiento_color",
         "% sin sentimiento negativo, por unidad", "% sin sentimiento negativo",
-    ))
+    ), 280)
 
     def _seccion(html_interno: str) -> str:
         return f'<div style="page-break-inside:avoid;">{html_interno}</div>'
@@ -503,11 +546,19 @@ def _formatear_informe_html(informe: dict) -> str:
     </style>
     <div style="font-family:sans-serif;color:{TEXTO_CLARO};background:{FONDO_PAGINA};width:100%;padding:14px;">
 
-      <div style="background:{estilo_marca_bg};padding:22px 24px;border-radius:8px;margin-bottom:24px;">
-        <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</span><br/>
-        <span style="color:white;font-size:22px;font-weight:700;line-height:2;">Informe de atención al huésped</span><br/>
-        <span style="color:#dbeafe;font-size:13px;">{titulo_periodo} · Cliente: Zafiro Property Management</span>
-      </div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+        <tr>
+          <td style="background:{estilo_marca_bg};padding:24px 26px;border-radius:8px 0 0 8px;width:68%;">
+            <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</span><br/>
+            <span style="color:white;font-size:23px;font-weight:700;line-height:2;">Informe de atención al huésped</span><br/>
+            <span style="color:#dbeafe;font-size:13px;">{titulo_periodo} · Cliente: Zafiro Property Management</span>
+          </td>
+          <td style="background:{COLOR_ACENTO};padding:24px 20px;border-radius:0 8px 8px 0;width:32%;text-align:center;vertical-align:middle;">
+            <span style="color:white;font-size:34px;font-weight:800;display:block;line-height:1.1;">{total}</span>
+            <span style="color:#ffe4d6;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">consultas atendidas</span>
+          </td>
+        </tr>
+      </table>
 
       <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:{TEXTO_TENUE};margin-bottom:10px;">Resumen ejecutivo</p>
       <table style="width:100%;border-collapse:collapse;margin-bottom:28px;">
@@ -525,33 +576,52 @@ def _formatear_informe_html(informe: dict) -> str:
         </tr>
       </table>
 
+      {_titulo_seccion("Por tipo, sentimiento y confianza")}
       {_seccion(f'''
-      <h3>Por tipo de consulta</h3>
-      {img_tipo}
-      <table style="{estilo_tabla}">
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          {_tarjeta_donut("Consultas por tipo", img_tipo, informe["por_tipo"])}
+          {_tarjeta_donut("Consultas por sentimiento", img_sentimiento, informe["por_sentimiento"], graficos_informe.COLOR_SENTIMIENTO)}
+          {_tarjeta_donut("Confianza de respuestas", img_confianza, informe["por_confianza"], graficos_informe.COLOR_CONFIANZA)}
+        </tr>
+      </table>
+      ''')}
+
+      <table style="{estilo_tabla}margin-top:16px;">
         <tr><th style="{estilo_header}">Tipo</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
         {_filas(informe['por_tipo'])}
       </table>
-      ''')}
 
+      {_titulo_seccion("Por unidad")}
       {_seccion(f'''
-      <h3>Por sentimiento</h3>
-      {img_sentimiento}
-      <table style="{estilo_tabla}">
-        <tr><th style="{estilo_header}">Sentimiento</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
-        {_filas(informe['por_sentimiento'])}
+      <table style="width:100%;border-collapse:collapse;">
+        <tr>
+          {_tarjeta_grafico("Consultas por unidad", "", img_volumen)}
+          {_tarjeta_grafico(
+              "Rendimiento del bot por unidad",
+              "Verde = va bien · amarillo = revisar · rojo = necesita atención",
+              img_confianza_unidad + img_sentimiento_unidad,
+          )}
+        </tr>
       </table>
       ''')}
 
-      {_seccion(f'''
-      <h3>Confianza de las respuestas del bot</h3>
-      {img_confianza}
-      <table style="{estilo_tabla}">
-        <tr><th style="{estilo_header}">Confianza</th><th style="{estilo_header}">Cantidad</th><th style="{estilo_header}">%</th></tr>
-        {_filas(informe['por_confianza'])}
+      <table style="{estilo_tabla}margin-top:16px;">
+        <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Desglose</th></tr>
+        {_filas_unidad()}
       </table>
-      ''')}
 
+      <p style="font-size:13px;font-weight:600;color:{TEXTO_CLARO};margin:20px 0 6px 0;">Detalle de rendimiento por unidad</p>
+      <table style="{estilo_tabla}">
+        <tr>
+          <th style="{estilo_header}">Unidad</th>
+          <th style="{estilo_header}">Confianza</th>
+          <th style="{estilo_header}">Sentimiento</th>
+        </tr>
+        {_filas_rendimiento_unidad()}
+      </table>
+
+      {_titulo_seccion("Índices de servicio")}
       {_seccion(f'''
       <h3>Índice de limpieza</h3>
       {_seccion_indice_servicio(indices_servicio.get("limpieza"), "Índice", estilo_celda, estilo_header, estilo_tabla)}
@@ -561,31 +631,6 @@ def _formatear_informe_html(informe: dict) -> str:
       <h3>Índice de mantenimiento</h3>
       {_seccion_indice_servicio(indices_servicio.get("mantenimiento"), "Índice", estilo_celda, estilo_header, estilo_tabla)}
       ''')}
-
-      {_seccion(f'''
-      <h3>Por unidad</h3>
-      {img_volumen}
-      <table style="{estilo_tabla}">
-        <tr><th style="{estilo_header}">Unidad</th><th style="{estilo_header}">Desglose</th></tr>
-        {_filas_unidad()}
-      </table>
-      ''')}
-
-      <h3>Rendimiento del bot por unidad</h3>
-      <p style="color:#94a3b8;font-size:12px;">
-        El detalle más fino — por casa/apartamento puntual, no solo por condominio. Verde = va bien,
-        amarillo = revisar, rojo = necesita atención.
-      </p>
-      {img_confianza_unidad}
-      {img_sentimiento_unidad}
-      <table style="{estilo_tabla}">
-        <tr>
-          <th style="{estilo_header}">Unidad</th>
-          <th style="{estilo_header}">Confianza</th>
-          <th style="{estilo_header}">Sentimiento</th>
-        </tr>
-        {_filas_rendimiento_unidad()}
-      </table>
 
       {_seccion(f'''
       <h3><span style="color:#d97706;">●</span> Unidades con más respuestas de baja confianza</h3>
