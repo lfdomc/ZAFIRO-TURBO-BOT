@@ -61,7 +61,12 @@ def _normalizar(texto: str) -> str:
     # Sin esto, un nombre como "Heavenly Highlands (FarmStay)" separa
     # "(farmstay)" con paréntesis pegados — nunca aparece así escrito en
     # un mensaje real, así que "FarmStay" solo nunca se reconocía.
-    return re.sub(r"[^a-z0-9\s]", " ", texto)
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    # Cada símbolo eliminado (#, -, /, etc.) deja un espacio suelto. Si no
+    # se colapsan los espacios repetidos, "oasis #3" queda como "oasis  3"
+    # (doble espacio) y ya no contiene la substring "oasis 3" del alias/
+    # nombre de la unidad — el matching fallaba en silencio por esto.
+    return re.sub(r"\s+", " ", texto).strip()
 
 
 async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, str | None, list[str]]:
@@ -396,6 +401,8 @@ PATRONES_AUTORIZACION_INDEBIDA = (
     "queda autorizado", "esta autorizado", "está autorizado", "aprobado",
     "confirmado que si", "confirmado que sí", "sin problema puede",
     "claro que puede", "por supuesto que puede", "no hay problema puede",
+    "podemos autorizar", "podemos autorizarte", "autorizamos", "te autorizamos",
+    "con gusto podemos autorizar", "te doy la autorizacion", "te doy la autorización",
 )
 
 # Regla 3/12 del prompt: nunca hablarle al huésped con frases que suenan a
@@ -413,7 +420,12 @@ def _revisar_reglas_respuesta(respuesta: str, tipo_consulta: str) -> list[str]:
     texto_norm = _normalizar_para_cache(respuesta)
     avisos = []
 
-    if tipo_consulta == "requiere_aprobacion" and any(p in texto_norm for p in PATRONES_AUTORIZACION_INDEBIDA):
+    # Antes esto solo se revisaba si tipo_consulta == "requiere_aprobacion",
+    # pero un mismo mensaje puede mezclar un reclamo de mantenimiento con un
+    # pedido de late check-out o reembolso (ej. caso Qbo colchón hundido) y
+    # clasificarse con OTRO tipo — la frase de autorización indebida es
+    # igual de grave sin importar cómo se clasificó el mensaje completo.
+    if any(p in texto_norm for p in PATRONES_AUTORIZACION_INDEBIDA):
         avisos.append("🚨 Parece estar autorizando algo por su cuenta (regla 5) — revisalo con cuidado antes de mandarlo.")
 
     if any(p in texto_norm for p in PATRONES_FUGA_INTERNA):
@@ -634,6 +646,13 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     factor_propiedad_unidad = bool(property_id_mencionada and unit_id_mencionado)
     factor_tiene_info = bool(contexto) and not incierta
     aciertos = int(factor_propiedad_unidad) + int(factor_tiene_info)
+
+    # Vacío de información: solo se registra si SÍ sabemos de qué
+    # propiedad se trata (si no, no es accionable — no sabríamos en qué
+    # ficha agregar el dato). No requiere que la unidad puntual también
+    # se haya identificado, ver ejemplo Qbo "¿aceptan mascotas?".
+    if not factor_tiene_info and property_id_mencionada:
+        await supabase_client.registrar_vacio_informacion(property_id_mencionada, unit_id_mencionado, texto_usuario)
 
     if aciertos == 2:
         nivel_confianza = "alta"

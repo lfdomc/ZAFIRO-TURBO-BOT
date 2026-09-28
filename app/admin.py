@@ -98,6 +98,68 @@ async def listar_campos(x_admin_key: str | None = Header(default=None)):
 
 
 # ------------------------------------------------------------
+# Vacíos de información — preguntas que Sofía no pudo responder pero sí
+# identificó de qué propiedad se trataba (ver factor_tiene_info en
+# main.py). Se listan acá para que el equipo las responda una vez; la
+# respuesta queda como campo personalizado de la unidad/propiedad y se
+# reindexa, así Sofía ya la tiene disponible la próxima vez.
+# ------------------------------------------------------------
+
+@router.get("/admin/vacios-informacion")
+async def endpoint_listar_vacios_informacion(x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    return await supabase_client.listar_vacios_informacion(solo_abiertos=True)
+
+
+@router.post("/admin/vacios-informacion/{vacio_id}/responder")
+async def responder_vacio_informacion(vacio_id: str, payload: dict, x_admin_key: str | None = Header(default=None)):
+    _verificar_admin_key(x_admin_key)
+    respuesta = (payload.get("respuesta") or "").strip()
+    if not respuesta:
+        raise HTTPException(status_code=400, detail="Falta 'respuesta'.")
+
+    todos = await supabase_client.listar_vacios_informacion(solo_abiertos=False)
+    vacio = next((v for v in todos if v["id"] == vacio_id), None)
+    if not vacio:
+        raise HTTPException(status_code=404, detail="Vacío de información no encontrado.")
+
+    property_id = vacio.get("property_id")
+    unit_id = vacio.get("unit_id")
+    prop = await supabase_client.obtener_property(property_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="La propiedad de este vacío ya no existe.")
+
+    # Se guarda como campo personalizado — de la unidad puntual si se
+    # identificó, o de la propiedad completa si no — usando la misma
+    # clave estable que ya usa property_service para reindexar. Así
+    # queda visible/editable después en la ficha normal de la
+    # propiedad, no solo como un dato flotante.
+    clave_campo = f"vacio_{vacio_id[:8]}"
+    etiqueta_campo = f"Vacío resuelto: {vacio['pregunta'][:60]}"
+
+    if unit_id:
+        unidad = next((u for u in prop.get("units", []) or [] if u.get("id") == unit_id), None)
+        if unidad is None:
+            raise HTTPException(status_code=404, detail="La unidad de este vacío ya no existe en la propiedad.")
+        unidad.setdefault("camposPersonalizados", {})[clave_campo] = respuesta
+    else:
+        prop.setdefault("camposPersonalizados", {})[clave_campo] = respuesta
+
+    await supabase_client.crear_campo_personalizado(
+        clave_campo, etiqueta_campo, tipo="texto", nivel="unidad" if unit_id else "propiedad",
+    )
+    try:
+        await property_service.guardar_y_reindexar_property(prop)
+    except Exception as e:
+        logger.error(f"Error guardando respuesta de vacío {vacio_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"No se pudo guardar: {e}")
+
+    await supabase_client.resolver_vacio_informacion(vacio_id, respuesta)
+    await _disparar_redeploy_sitio()
+    return {"ok": True}
+
+
+# ------------------------------------------------------------
 # Información general (FAQs, mensajes frecuentes, contactos) — lo que no
 # pertenece a una propiedad puntual. Antes solo se podía cambiar
 # reimportando el JSON completo; esto permite editarla directo desde el
@@ -199,9 +261,42 @@ async def importar_propiedades(datos: dict, x_admin_key: str | None = Header(def
     return {"ok": True, "mensaje": "Importación iniciada en segundo plano."}
 
 
+def _rango_a_fechas(rango: str) -> tuple[datetime, datetime, str]:
+    """Traduce el filtro de período del Dashboard en vivo (mes actual /
+    3 meses / semestral / año) a un rango [desde, hasta) concreto. El
+    mes en curso siempre queda parcial (llega hasta "ahora"), igual que
+    ya pasaba con el informe de un mes puntual."""
+    ahora = datetime.now(timezone.utc)
+    primer_dia_mes_actual = datetime(ahora.year, ahora.month, 1, tzinfo=timezone.utc)
+
+    def _restar_meses(fecha: datetime, meses: int) -> datetime:
+        mes_total = fecha.month - 1 - meses
+        anio = fecha.year + mes_total // 12
+        mes = mes_total % 12 + 1
+        return datetime(anio, mes, 1, tzinfo=timezone.utc)
+
+    if rango == "actual":
+        return primer_dia_mes_actual, ahora, "Mes actual"
+    if rango == "3m":
+        return _restar_meses(primer_dia_mes_actual, 2), ahora, "Últimos 3 meses"
+    if rango == "6m":
+        return _restar_meses(primer_dia_mes_actual, 5), ahora, "Últimos 6 meses (semestral)"
+    if rango == "anio":
+        return datetime(ahora.year, 1, 1, tzinfo=timezone.utc), ahora, f"Año {ahora.year}"
+    raise HTTPException(status_code=400, detail="rango debe ser: actual, 3m, 6m o anio")
+
+
 @router.get("/admin/informe-mensual")
-async def informe_mensual(anio: int, mes: int, x_admin_key: str | None = Header(default=None)):
+async def informe_mensual(
+    anio: int | None = None, mes: int | None = None, rango: str | None = None,
+    x_admin_key: str | None = Header(default=None),
+):
     _verificar_admin_key(x_admin_key)
+    if rango:
+        desde_dt, hasta_dt, etiqueta = _rango_a_fechas(rango)
+        return await supabase_client.generar_informe_periodo(desde_dt, hasta_dt, etiqueta)
+    if anio is None or mes is None:
+        raise HTTPException(status_code=400, detail="Especificá 'anio' y 'mes', o 'rango'.")
     if not (1 <= mes <= 12):
         raise HTTPException(status_code=400, detail="mes debe estar entre 1 y 12")
     return await supabase_client.generar_informe_mensual(anio, mes)
@@ -242,6 +337,7 @@ def _seccion_indice_servicio(datos: dict | None, etiqueta_celda: str, estilo_cel
 def _formatear_informe_html(informe: dict) -> str:
     total = informe["total_consultas"]
     nombre_mes = NOMBRES_MES[informe["mes"] - 1]
+    titulo_periodo = informe.get("periodo_etiqueta") or f"{nombre_mes.capitalize()} {informe['anio']}"
 
     # Resumen ejecutivo — los números que más le importan al encargado,
     # arriba de todo, antes de entrar al detalle.
@@ -293,11 +389,16 @@ def _formatear_informe_html(informe: dict) -> str:
             for u, n in filas_ordenadas
         )
 
-    def _lista_ejemplos(ejemplos: list) -> str:
+    def _lista_ejemplos(ejemplos: list, mostrar_confianza: bool = False) -> str:
         if not ejemplos:
-            return "<p style='color:#94a3b8;font-size:13px;'>Ninguno este mes.</p>"
+            return "<p style='color:#94a3b8;font-size:13px;'>Ninguno en este período.</p>"
+        etiquetas_confianza = {"media": "🟡 Media", "baja": "🔴 Baja"}
         items = "".join(
-            f"<li style='margin-bottom:8px;'><strong>{e['propiedad']}</strong>: {e['mensaje']}</li>"
+            f"<li style='margin-bottom:10px;'>"
+            f"<strong>{e['propiedad']}</strong>"
+            + (f" · {etiquetas_confianza.get(e.get('confianza'), e.get('confianza'))}" if mostrar_confianza and e.get("confianza") else "")
+            + f" · {e.get('tipo', '')} · {e.get('fecha', '')}<br/>"
+            f"<span style='color:#475569;'>{e['mensaje']}</span></li>"
             for e in ejemplos
         )
         return f"<ul style='font-size:13px;padding-left:18px;'>{items}</ul>"
@@ -372,8 +473,8 @@ def _formatear_informe_html(informe: dict) -> str:
 
       <div style="background:{estilo_marca_bg};padding:22px 24px;border-radius:8px;margin-bottom:24px;">
         <span style="color:#93c5fd;font-size:11px;letter-spacing:1.5px;">S.O.F.I.A. — Sistema Operativo de Fidelización e Información Avanzada</span><br/>
-        <span style="color:white;font-size:22px;font-weight:700;line-height:2;">Informe mensual de atención al huésped</span><br/>
-        <span style="color:#dbeafe;font-size:13px;">{nombre_mes.capitalize()} {informe['anio']} · Cliente: Zafiro Property Management</span>
+        <span style="color:white;font-size:22px;font-weight:700;line-height:2;">Informe de atención al huésped</span><br/>
+        <span style="color:#dbeafe;font-size:13px;">{titulo_periodo} · Cliente: Zafiro Property Management</span>
       </div>
 
       <p style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:10px;">Resumen ejecutivo</p>
@@ -472,8 +573,14 @@ def _formatear_informe_html(informe: dict) -> str:
       ''')}
 
       {_seccion(f'''
-      <h3>Ejemplos de baja confianza este mes</h3>
-      {_lista_ejemplos(informe['ejemplos_baja_confianza'])}
+      <h3>🟡🔴 Por revisar — confianza media o baja</h3>
+      <p style="color:#94a3b8;font-size:12px;">Contexto real de la pregunta para poder revisar la conversación y ver si falta completar información en esa unidad.</p>
+      {_lista_ejemplos(informe.get('ejemplos_por_revisar', []), mostrar_confianza=True)}
+      ''')}
+
+      {_seccion(f'''
+      <h3>😟 Por revisar — sentimiento negativo</h3>
+      {_lista_ejemplos(informe.get('ejemplos_sentimiento_negativo', []))}
       ''')}
 
       <div style="border-top:1px solid #e2e8f0;margin-top:16px;padding-top:12px;">
@@ -487,15 +594,27 @@ def _formatear_informe_html(informe: dict) -> str:
 
 
 @router.get("/admin/informe-mensual/pdf")
-async def informe_mensual_pdf(anio: int, mes: int, x_admin_key: str | None = Header(default=None)):
+async def informe_mensual_pdf(
+    anio: int | None = None, mes: int | None = None, rango: str | None = None,
+    x_admin_key: str | None = Header(default=None),
+):
     _verificar_admin_key(x_admin_key)
-    if not (1 <= mes <= 12):
-        raise HTTPException(status_code=400, detail="mes debe estar entre 1 y 12")
 
     from io import BytesIO
     from xhtml2pdf import pisa
 
-    informe = await supabase_client.generar_informe_mensual(anio, mes)
+    if rango:
+        desde_dt, hasta_dt, etiqueta = _rango_a_fechas(rango)
+        informe = await supabase_client.generar_informe_periodo(desde_dt, hasta_dt, etiqueta)
+        nombre_archivo = f"informe_{rango}_{hasta_dt.date().isoformat()}.pdf"
+    else:
+        if anio is None or mes is None:
+            raise HTTPException(status_code=400, detail="Especificá 'anio' y 'mes', o 'rango'.")
+        if not (1 <= mes <= 12):
+            raise HTTPException(status_code=400, detail="mes debe estar entre 1 y 12")
+        informe = await supabase_client.generar_informe_mensual(anio, mes)
+        nombre_archivo = f"informe_{anio}-{mes:02d}.pdf"
+
     html = _formatear_informe_html(informe)
 
     buffer = BytesIO()
@@ -503,7 +622,6 @@ async def informe_mensual_pdf(anio: int, mes: int, x_admin_key: str | None = Hea
     if resultado.err:
         raise HTTPException(status_code=500, detail="No se pudo generar el PDF del informe.")
 
-    nombre_archivo = f"informe_{anio}-{mes:02d}.pdf"
     return Response(
         content=buffer.getvalue(),
         media_type="application/pdf",

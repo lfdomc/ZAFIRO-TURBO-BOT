@@ -8,6 +8,7 @@ propiedad (fuente de verdad para el sitio); `knowledge_chunks` es un
 import httpx
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from app.config import settings
 
 logger = logging.getLogger("supabase_client")
@@ -228,38 +229,56 @@ def _color_sentimiento(pct_no_negativo: float) -> str:
 
 
 async def generar_informe_mensual(anio: int, mes: int) -> dict:
-    """Lee historial_archivo del mes pedido (solo filas role='user', que
-    son las que llevan tipo_consulta/sentimiento/confianza) y arma los
-    indicadores agregados: cuántas consultas de cada tipo, de cada
-    sentimiento, de cada nivel de confianza del bot, desglosado por
-    propiedad Y por unidad puntual (ej. 'Urban 1411' en vez de solo
-    'Urban Escalante'), más el FCR (First Contact Resolution) de
-    reportes de mantenimiento/limpieza — la base del informe mensual."""
-    desde = f"{anio:04d}-{mes:02d}-01T00:00:00Z"
-    if mes == 12:
-        hasta = f"{anio + 1:04d}-01-01T00:00:00Z"
-    else:
-        hasta = f"{anio:04d}-{mes + 1:02d}-01T00:00:00Z"
+    """Compatibilidad hacia atrás — informe de UN mes calendario puntual
+    (lo usa el informe oficial que se envía por correo). Delega en
+    generar_informe_periodo(), la versión genérica para cualquier rango
+    de fechas que también usa el Dashboard en vivo con sus filtros de
+    3/6/12 meses."""
+    desde_dt = datetime(anio, mes, 1, tzinfo=timezone.utc)
+    hasta_dt = datetime(anio + 1, 1, 1, tzinfo=timezone.utc) if mes == 12 else datetime(anio, mes + 1, 1, tzinfo=timezone.utc)
+    informe = await generar_informe_periodo(desde_dt, hasta_dt)
+    informe["anio"] = anio
+    informe["mes"] = mes
+    return informe
+
+
+async def generar_informe_periodo(desde_dt: datetime, hasta_dt: datetime, etiqueta_periodo: str | None = None) -> dict:
+    """Versión genérica de generar_informe_mensual para un rango
+    [desde_dt, hasta_dt) arbitrario — un mes calendario puntual o un
+    rango más amplio (3/6/12 meses) para los filtros del Dashboard en
+    vivo. Lee historial_archivo (solo filas role='user', que llevan
+    tipo_consulta/sentimiento/confianza) y arma los indicadores
+    agregados: por tipo, sentimiento, confianza, propiedad Y unidad
+    puntual, más el FCR de mantenimiento/limpieza. `anio`/`mes` en el
+    resultado quedan fijos al FIN del rango (para nombre de archivo /
+    compatibilidad); `periodo_desde/hasta/etiqueta` describen el rango
+    real."""
+    desde = _iso_url(desde_dt)
+    hasta = _iso_url(hasta_dt)
+
+    base_vacia = {
+        "periodo_desde": desde_dt.date().isoformat(), "periodo_hasta": hasta_dt.date().isoformat(),
+        "periodo_etiqueta": etiqueta_periodo, "anio": hasta_dt.year, "mes": hasta_dt.month,
+        "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {},
+        "por_confianza": {}, "por_propiedad": {}, "por_unidad": {}, "indices_servicio": {
+            "limpieza": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
+            "mantenimiento": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
+        },
+        "confianza_baja_por_propiedad": {}, "sentimiento_negativo_por_propiedad": {},
+        "confianza_baja_por_unidad": {}, "sentimiento_negativo_por_unidad": {},
+        "ejemplos_por_revisar": [], "ejemplos_sentimiento_negativo": [], "rendimiento_por_unidad": [],
+    }
 
     url = (
         f"{_base_url()}/rest/v1/historial_archivo"
         f"?creado_en=gte.{desde}&creado_en=lt.{hasta}&role=eq.user"
-        f"&select=property_id,unit_id,tipo_consulta,sentimiento,confianza,contenido"
+        f"&select=property_id,unit_id,tipo_consulta,sentimiento,confianza,contenido,creado_en"
     )
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url, headers=_headers())
         if resp.status_code != 200:
-            logger.error(f"Error generando informe mensual: HTTP {resp.status_code}: {resp.text}")
-            return {
-                "anio": anio, "mes": mes, "total_consultas": 0, "por_tipo": {}, "por_sentimiento": {},
-                "por_confianza": {}, "por_propiedad": {}, "por_unidad": {}, "indices_servicio": {
-                    "limpieza": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
-                    "mantenimiento": {"total_reportes": 0, "resueltos_primera_vez": 0, "pct": None, "por_unidad": []},
-                },
-                "confianza_baja_por_propiedad": {}, "sentimiento_negativo_por_propiedad": {},
-                "confianza_baja_por_unidad": {}, "sentimiento_negativo_por_unidad": {},
-                "ejemplos_baja_confianza": [], "rendimiento_por_unidad": [],
-            }
+            logger.error(f"Error generando informe: HTTP {resp.status_code}: {resp.text}")
+            return base_vacia
         filas = resp.json()
 
     propiedades_con_datos = await listar_propiedades_con_datos()
@@ -269,7 +288,7 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
     por_tipo, por_sentimiento, por_confianza, por_propiedad = {}, {}, {}, {}
     confianza_baja_por_propiedad, sentimiento_negativo_por_propiedad = {}, {}
     confianza_baja_por_unidad, sentimiento_negativo_por_unidad, por_unidad = {}, {}, {}
-    ejemplos_baja_confianza = []
+    ejemplos_por_revisar, ejemplos_sentimiento_negativo = [], []
     unidades_datos: dict[tuple, dict] = {}
     for f in filas:
         t = f.get("tipo_consulta") or "sin_clasificar"
@@ -279,6 +298,7 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
         uid = f.get("unit_id")
         nombre_prop = propiedades.get(pid, pid) or "Sin propiedad identificada"
         etiqueta_u = etiquetas_unidad.get((pid, uid)) or nombre_prop
+        fecha = (f.get("creado_en") or "")[:10]
 
         por_tipo[t] = por_tipo.get(t, 0) + 1
         por_sentimiento[s] = por_sentimiento.get(s, 0) + 1
@@ -291,11 +311,22 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
         if c == "baja":
             confianza_baja_por_propiedad[nombre_prop] = confianza_baja_por_propiedad.get(nombre_prop, 0) + 1
             confianza_baja_por_unidad[etiqueta_u] = confianza_baja_por_unidad.get(etiqueta_u, 0) + 1
-            if len(ejemplos_baja_confianza) < 10:
-                ejemplos_baja_confianza.append({"propiedad": etiqueta_u, "mensaje": (f.get("contenido") or "")[:200]})
+        # "Por revisar": confianza media O baja — más contexto (fecha, tipo
+        # y el mensaje real) para poder ir a la conversación y ver si hace
+        # falta completar información (ver también vacios_informacion).
+        if c in ("media", "baja") and len(ejemplos_por_revisar) < 25:
+            ejemplos_por_revisar.append({
+                "propiedad": etiqueta_u, "tipo": t, "confianza": c, "fecha": fecha,
+                "mensaje": (f.get("contenido") or "")[:220],
+            })
         if s == "negativo":
             sentimiento_negativo_por_propiedad[nombre_prop] = sentimiento_negativo_por_propiedad.get(nombre_prop, 0) + 1
             sentimiento_negativo_por_unidad[etiqueta_u] = sentimiento_negativo_por_unidad.get(etiqueta_u, 0) + 1
+            if len(ejemplos_sentimiento_negativo) < 25:
+                ejemplos_sentimiento_negativo.append({
+                    "propiedad": etiqueta_u, "tipo": t, "fecha": fecha,
+                    "mensaje": (f.get("contenido") or "")[:220],
+                })
 
         clave_unidad = (pid, uid)
         registro = unidades_datos.setdefault(clave_unidad, {"total": 0, "confianza": {}, "sentimiento": {}})
@@ -318,35 +349,36 @@ async def generar_informe_mensual(anio: int, mes: int) -> dict:
         })
     rendimiento_por_unidad.sort(key=lambda r: r["total_consultas"], reverse=True)
 
-    indices_servicio = await _calcular_indices_servicio(anio, mes, etiquetas_unidad)
+    indices_servicio = await _calcular_indices_servicio(desde_dt, hasta_dt, etiquetas_unidad)
 
     return {
-        "anio": anio, "mes": mes, "total_consultas": len(filas),
+        "periodo_desde": desde_dt.date().isoformat(), "periodo_hasta": hasta_dt.date().isoformat(),
+        "periodo_etiqueta": etiqueta_periodo, "anio": hasta_dt.year, "mes": hasta_dt.month,
+        "total_consultas": len(filas),
         "por_tipo": por_tipo, "por_sentimiento": por_sentimiento, "por_confianza": por_confianza,
         "por_propiedad": por_propiedad, "por_unidad": por_unidad, "indices_servicio": indices_servicio,
         "confianza_baja_por_propiedad": confianza_baja_por_propiedad,
         "sentimiento_negativo_por_propiedad": sentimiento_negativo_por_propiedad,
         "confianza_baja_por_unidad": confianza_baja_por_unidad,
         "sentimiento_negativo_por_unidad": sentimiento_negativo_por_unidad,
-        "ejemplos_baja_confianza": ejemplos_baja_confianza,
+        "ejemplos_por_revisar": ejemplos_por_revisar,
+        "ejemplos_sentimiento_negativo": ejemplos_sentimiento_negativo,
         "rendimiento_por_unidad": rendimiento_por_unidad,
     }
 
 
-async def _calcular_indices_servicio(anio: int, mes: int, etiquetas_unidad: dict) -> dict:
+async def _calcular_indices_servicio(desde_dt: datetime, hasta_dt: datetime, etiquetas_unidad: dict) -> dict:
     """Como el viejo FCR, pero separado en dos índices — limpieza y
     mantenimiento — y con desglose por unidad en cada uno. Un solo
     número mezclando los dos tipos ocultaba cuál de los dos servicios
     necesita atención en qué unidad puntual; esto se lo muestra
-    directo al cliente. Para cada tipo: de los reportes del mes, qué %
-    NO tuvo un reporte de seguimiento del MISMO tipo, en la MISMA
-    propiedad y unidad, dentro de los 7 días siguientes — una proxy de
-    'se resolvió a la primera', ya que hoy no hay un botón de marcar
-    un reporte como resuelto."""
-    desde_dt = datetime.fromisoformat(f"{anio:04d}-{mes:02d}-01T00:00:00+00:00")
-    hasta_dt = datetime(anio + 1, 1, 1, tzinfo=timezone.utc) if mes == 12 else datetime(anio, mes + 1, 1, tzinfo=timezone.utc)
-    # Margen de 7 días después del mes, para detectar seguimientos que
-    # caen justo después del cierre de mes.
+    directo al cliente. Para cada tipo: de los reportes del rango
+    [desde_dt, hasta_dt), qué % NO tuvo un reporte de seguimiento del
+    MISMO tipo, en la MISMA propiedad y unidad, dentro de los 7 días
+    siguientes — una proxy de 'se resolvió a la primera', ya que hoy no
+    hay un botón de marcar un reporte como resuelto."""
+    # Margen de 7 días después del rango, para detectar seguimientos que
+    # caen justo después del cierre del período.
     hasta_con_margen = hasta_dt + timedelta(days=7)
 
     url = (
@@ -426,6 +458,104 @@ async def eliminar_property(property_id: str) -> bool:
             return True
         logger.error(f"Error eliminando propiedad {property_id}: HTTP {resp.status_code}: {resp.text}")
         return False
+
+
+# ------------------------------------------------------------
+# Vacíos de información — preguntas que Sofía no pudo responder pero sí
+# identificó de qué propiedad se trataba (ver factor_tiene_info en
+# main.py). El panel Admin las lista para que el equipo las responda
+# una vez; esa respuesta se guarda como campo personalizado de la
+# unidad/propiedad y se reindexa — no hace falta re-importar el JSON.
+# ------------------------------------------------------------
+
+def _normalizar_texto_simple(texto: str) -> str:
+    import re
+    import unicodedata
+    texto = unicodedata.normalize("NFD", (texto or "").lower())
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Mn")
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    return re.sub(r"\s+", " ", texto).strip()
+
+
+async def registrar_vacio_informacion(property_id: str | None, unit_id: str | None, pregunta: str) -> None:
+    """Si ya hay un vacío ABIERTO igual (misma propiedad+unidad+pregunta
+    normalizada) le suma una detección más; si no, crea uno nuevo. Nunca
+    lanza — un fallo acá no debe interrumpir la respuesta al huésped."""
+    if not property_id or not (pregunta or "").strip():
+        return
+    pregunta_norm = _normalizar_texto_simple(pregunta)
+    if not pregunta_norm:
+        return
+    try:
+        filtro_unidad = f"&unit_id=eq.{unit_id}" if unit_id else "&unit_id=is.null"
+        url_buscar = (
+            f"{_base_url()}/rest/v1/vacios_informacion"
+            f"?property_id=eq.{property_id}{filtro_unidad}"
+            f"&pregunta_normalizada=eq.{quote(pregunta_norm)}&resuelto=eq.false&select=id,veces_detectado&limit=1"
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url_buscar, headers=_headers())
+            existentes = resp.json() if resp.status_code == 200 else []
+            ahora = _iso_url(datetime.now(timezone.utc))
+            if existentes:
+                vacio_id = existentes[0]["id"]
+                nuevas_veces = existentes[0]["veces_detectado"] + 1
+                url_patch = f"{_base_url()}/rest/v1/vacios_informacion?id=eq.{vacio_id}"
+                await client.patch(
+                    url_patch,
+                    json={"veces_detectado": nuevas_veces, "ultima_vez": ahora, "pregunta": pregunta[:500]},
+                    headers={**_headers(), "Prefer": "return=minimal"},
+                )
+            else:
+                url_post = f"{_base_url()}/rest/v1/vacios_informacion"
+                await client.post(
+                    url_post,
+                    json={
+                        "property_id": property_id, "unit_id": unit_id,
+                        "pregunta": pregunta[:500], "pregunta_normalizada": pregunta_norm,
+                    },
+                    headers={**_headers(), "Prefer": "return=minimal"},
+                )
+    except Exception as e:
+        logger.error(f"Fallo registrando vacío de información: {e}")
+
+
+async def listar_vacios_informacion(solo_abiertos: bool = True) -> list[dict]:
+    """Trae los vacíos de información con `nombre_propiedad` y
+    `etiqueta_unidad` ya resueltos (mismo mapa que usa el informe
+    mensual), para que el panel Admin no tenga que pedir las
+    propiedades aparte."""
+    filtro = "&resuelto=eq.false" if solo_abiertos else ""
+    url = (
+        f"{_base_url()}/rest/v1/vacios_informacion"
+        f"?select=id,property_id,unit_id,pregunta,veces_detectado,primera_vez,ultima_vez,resuelto,respuesta"
+        f"{filtro}&order=ultima_vez.desc"
+    )
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=_headers())
+        if resp.status_code != 200:
+            logger.error(f"Error listando vacíos de información: HTTP {resp.status_code}: {resp.text}")
+            return []
+        filas = resp.json()
+
+    if filas:
+        propiedades_con_datos = await listar_propiedades_con_datos()
+        propiedades = {p["id"]: p["nombre"] for p in propiedades_con_datos}
+        etiquetas_unidad = _mapa_etiquetas_unidad(propiedades_con_datos)
+        for f in filas:
+            pid, uid = f.get("property_id"), f.get("unit_id")
+            f["nombre_propiedad"] = propiedades.get(pid) or pid
+            f["etiqueta_unidad"] = etiquetas_unidad.get((pid, uid)) if uid else None
+    return filas
+
+
+async def resolver_vacio_informacion(vacio_id: str, respuesta: str) -> None:
+    url = f"{_base_url()}/rest/v1/vacios_informacion?id=eq.{vacio_id}"
+    payload = {"resuelto": True, "respuesta": respuesta, "resuelto_en": _iso_url(datetime.now(timezone.utc))}
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.patch(url, json=payload, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error marcando vacío resuelto {vacio_id}: HTTP {resp.status_code}: {resp.text}")
 
 
 # ------------------------------------------------------------

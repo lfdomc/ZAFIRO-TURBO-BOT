@@ -292,9 +292,34 @@ begin
   foreach tabla in array array[
     'properties', 'configuracion_general', 'knowledge_chunks', 'custom_field_defs',
     'reportes_incidencias', 'accesos_temporales', 'historial_conversacion',
-    'historial_archivo', 'capa_logs'
+    'historial_archivo', 'capa_logs', 'vacios_informacion'
   ]
   loop
     execute format('grant select, insert, update, delete on public.%I to service_role', tabla);
   end loop;
 end $$;
+
+-- ------------------------------------------------------------
+-- Vacíos de información — cada vez que Sofía no encuentra el dato que
+-- le piden (factor_tiene_info = False) PERO sí identificó de cuál
+-- propiedad se trata, se guarda acá la pregunta para que el equipo la
+-- responda desde el panel Admin. Al responder, la respuesta se agrega
+-- como campo personalizado de la unidad/propiedad y se reindexa — así
+-- la próxima vez Sofía ya tiene el dato. Si la misma pregunta se repite
+-- (mismo property_id + unit_id + texto normalizado), solo sube
+-- `veces_detectado` en vez de crear una fila nueva.
+create table if not exists vacios_informacion (
+  id uuid primary key default gen_random_uuid(),
+  property_id text references properties(id),
+  unit_id text,                      -- null = a nivel de toda la propiedad
+  pregunta text not null,            -- texto original del huésped/admin (la última vez que se detectó)
+  pregunta_normalizada text not null,-- para deduplicar (mismo criterio de _normalizar en main.py)
+  veces_detectado int not null default 1,
+  primera_vez timestamptz not null default now(),
+  ultima_vez timestamptz not null default now(),
+  resuelto boolean not null default false,
+  respuesta text,
+  resuelto_en timestamptz
+);
+
+create index if not exists idx_vacios_abiertos on vacios_informacion(resuelto, property_id, ultima_vez desc);
