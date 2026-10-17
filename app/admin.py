@@ -159,6 +159,18 @@ async def responder_vacio_informacion(vacio_id: str, payload: dict, x_admin_key:
     return {"ok": True}
 
 
+@router.delete("/admin/vacios-informacion/{vacio_id}")
+async def descartar_vacio_informacion(vacio_id: str, x_admin_key: str | None = Header(default=None)):
+    """Descarta un vacío de información SIN responderlo — no crea campo
+    personalizado ni reindexa nada, solo lo borra de la lista (para
+    duplicados o preguntas que no ameritan guardarse)."""
+    _verificar_admin_key(x_admin_key)
+    ok = await supabase_client.descartar_vacio_informacion(vacio_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="No se pudo descartar el vacío de información.")
+    return {"ok": True}
+
+
 # ------------------------------------------------------------
 # Información general (FAQs, mensajes frecuentes, contactos) — lo que no
 # pertenece a una propiedad puntual. Antes solo se podía cambiar

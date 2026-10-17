@@ -568,6 +568,18 @@ async def resolver_vacio_informacion(vacio_id: str, respuesta: str) -> None:
             logger.error(f"Error marcando vacío resuelto {vacio_id}: HTTP {resp.status_code}: {resp.text}")
 
 
+async def descartar_vacio_informacion(vacio_id: str) -> bool:
+    """Borra un vacío de información sin generar respuesta ni campo
+    personalizado — para preguntas duplicadas, mal clasificadas, o que
+    ya no ameritan guardarse en la base de conocimiento."""
+    url = f"{_base_url()}/rest/v1/vacios_informacion?id=eq.{vacio_id}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.delete(url, headers={**_headers(), "Prefer": "return=minimal"})
+        if resp.status_code not in (200, 204):
+            logger.error(f"Error descartando vacío {vacio_id}: HTTP {resp.status_code}: {resp.text}")
+        return resp.status_code in (200, 204)
+
+
 # ------------------------------------------------------------
 # Campos personalizados — definiciones globales (panel Admin)
 # ------------------------------------------------------------
