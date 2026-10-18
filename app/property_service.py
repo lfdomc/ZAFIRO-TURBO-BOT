@@ -152,6 +152,16 @@ async def guardar_y_reindexar_property(prop: dict) -> None:
         listing = unidad.get("listing") or {}
         if listing.get("description"):
             await _chunk(f"{nombre} — {nombre_unidad}: {listing['description']}", "info", pid, uid)
+
+        if unidad.get("destacadosMarketing"):
+            # Texto de venta de la unidad (vista, ambiente, por qué elegirla),
+            # separado de la descripción operativa — Sofía lo usa para las
+            # frases cálidas de la regla 17 del prompt, nunca para datos
+            # operativos (eso sigue viniendo de los demás campos).
+            await _chunk(
+                f"{nombre} — {nombre_unidad} — Destacados de la unidad: {unidad['destacadosMarketing']}",
+                "marketing", pid, uid,
+            )
         detalles_listing = []
         for campo, etiqueta in (("guests", "huéspedes"), ("bedrooms", "habitaciones"),
                                  ("beds", "camas"), ("bathrooms", "baños")):
