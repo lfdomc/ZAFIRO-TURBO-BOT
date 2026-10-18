@@ -5,6 +5,7 @@ Diseño: `properties.datos` guarda el JSON completo y verbatim de cada
 propiedad (fuente de verdad para el sitio); `knowledge_chunks` es un
 índice derivado, solo para que el bot busque por significado.
 """
+import asyncio
 import httpx
 import logging
 from datetime import datetime, timedelta, timezone
@@ -163,14 +164,26 @@ async def insertar_chunk(
 
 async def listar_propiedades_con_datos() -> list[dict]:
     """Como listar_propiedades_resumen, pero incluye `datos` completo —
-    lo usa el panel Admin para calcular qué falta cargar en cada una."""
+    la usan tanto el panel Admin (para calcular qué falta cargar) como
+    el bot (_detectar_property_y_unidad, en cada mensaje de un huésped).
+    Un fallo puntual acá (timeout/hiccup de red) antes solo se logueaba
+    y devolvía [] — eso hacía que el bot "no reconociera" la propiedad/
+    unidad esa vez aunque la respuesta igual saliera bien (la búsqueda
+    semántica es una llamada aparte), bajando la confianza sin razón
+    real. Un reintento corto cubre la mayoría de esos hiccups."""
     url = f"{_base_url()}/rest/v1/properties?select=id,nombre,zona,actualizado_en,datos&order=nombre.asc"
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, headers=_headers())
-        if resp.status_code == 200:
-            return resp.json()
-        logger.error(f"Error listando propiedades con datos: HTTP {resp.status_code}: {resp.text}")
-        return []
+    for intento in (1, 2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=_headers())
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(f"Error listando propiedades con datos (intento {intento}): HTTP {resp.status_code}: {resp.text}")
+        except httpx.HTTPError as e:
+            logger.error(f"Error de red listando propiedades con datos (intento {intento}): {e}")
+        if intento == 1:
+            await asyncio.sleep(0.5)
+    return []
 
 
 async def listar_propiedades_resumen() -> list[dict]:
