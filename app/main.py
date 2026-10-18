@@ -117,6 +117,23 @@ async def _detectar_property_y_unidad(texto_usuario: str) -> tuple[str | None, s
         fila = next((f for f in filas if f["id"] == property_id), None)
         unidades = (fila.get("datos") or {}).get("units", []) if fila else []
         unit_id_automatico = unidades[0].get("id") if len(unidades) == 1 else None
+        if not unit_id_automatico and len(unidades) > 1:
+            # La propiedad ya quedó resuelta sola, pero tiene varias unidades
+            # y ninguna coincidió arriba porque el huésped escribió solo el
+            # número ("Villa Verde Oasis 2") y el nombre guardado es distinto
+            # ("Oasis Casa #2") — el candidato completo nunca iba a calzar
+            # como substring. Acá buscamos el número como token aislado en
+            # el mensaje (sin el filtro de 3+ caracteres, que tiene sentido
+            # para nombres pero descartaría un "num" de un solo dígito) y
+            # solo lo usamos si identifica una única unidad sin ambigüedad.
+            numeros_mensaje = set(re.findall(r"\b\d+\b", texto_norm))
+            if numeros_mensaje:
+                unidades_por_numero = [
+                    u for u in unidades
+                    if u.get("num") and str(u.get("num")).strip() in numeros_mensaje
+                ]
+                if len(unidades_por_numero) == 1:
+                    unit_id_automatico = unidades_por_numero[0].get("id")
         return property_id, unit_id_automatico, []
 
     if len(coincidencias_prop) > 1:
