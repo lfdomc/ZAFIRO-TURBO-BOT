@@ -834,6 +834,28 @@ async def webhook_telegram(request: Request, x_telegram_bot_api_secret_token: st
     system_prompt = SYSTEM_PROMPT_ADMIN
     if contexto:
         system_prompt += f"\n\nContexto recuperado:\n{contexto}"
+        if unit_id_mencionado:
+            # El RPC busqueda_hibrida_propiedades no devuelve nombre_unidad
+            # (solo nombre_propiedad) — sin esto, el modelo solo ve el
+            # nombre de la propiedad en la etiqueta de cada fragmento y
+            # arma uno propio (ej. "Villa Verde - Oasis (2)") en vez de usar
+            # el nombre real de la unidad (ej. "Oasis Casa #2"), aunque ese
+            # nombre sí ande suelto dentro del texto de algún fragmento.
+            datos_prop_mencionada = await supabase_client.obtener_property(property_id_mencionada)
+            unidad_mencionada = next(
+                (u for u in (datos_prop_mencionada or {}).get("units", []) if u.get("id") == unit_id_mencionado),
+                None,
+            )
+            if unidad_mencionada and unidad_mencionada.get("name"):
+                num_unidad = unidad_mencionada.get("num")
+                nombre_unidad_resuelta = unidad_mencionada["name"]
+                if num_unidad and str(num_unidad) not in nombre_unidad_resuelta:
+                    nombre_unidad_resuelta += f" ({num_unidad})"
+                system_prompt += (
+                    f"\n\nAVISO: la unidad identificada es '{nombre_unidad_resuelta}'. Usá ese nombre completo tal "
+                    "cual al referirte a la unidad en tu respuesta — no lo reemplaces por el nombre de la propiedad "
+                    "más el número ni por ninguna otra variante."
+                )
         if not property_id_mencionada:
             if propiedades_ambiguas:
                 lista = ", ".join(propiedades_ambiguas)
